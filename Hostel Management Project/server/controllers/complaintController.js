@@ -49,10 +49,7 @@ export const updateComplaintStatus = async (req, res) => {
     }
 
     if (role === 'warden') {
-      if (String(complaint.current_level || '').trim().toLowerCase() !== 'warden') {
-        return res.status(403).json({ message: 'This complaint has been escalated and is no longer assigned to Warden.' })
-      }
-      if (actor.block && complaint.block !== actor.block) {
+      if (actor.block && complaint.block && complaint.block !== actor.block) {
         return res.status(403).json({ message: 'You can update only complaints assigned to your block.' })
       }
     } else {
@@ -68,6 +65,7 @@ export const updateComplaintStatus = async (req, res) => {
     complaint.solved_date = solvedAt
     complaint.updatedAt = new Date()
     await complaint.save()
+    await complaint.populate('student_id', 'name')
 
     return res.json({
       message: 'Complaint status updated successfully.',

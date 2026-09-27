@@ -187,27 +187,6 @@ function ManagerDashboard() {
     }
   }, [statusUpdateNotice])
 
-  const getStatusCounts = useCallback((items) => {
-    return items.reduce(
-      (acc, complaint) => {
-        const status = String(complaint?.status || "").trim().toLowerCase()
-        if (status === "pending") {
-          acc.pending += 1
-          acc.total += 1
-        } else if (status === "resolved" || status === "solved") {
-          acc.resolved += 1
-        } else if (status === "in progress" || status === "in_progress" || status === "inprogress") {
-          acc.inProgress += 1
-          acc.total += 1
-        } else {
-          acc.total += 1
-        }
-        return acc
-      },
-      { total: 0, pending: 0, inProgress: 0, resolved: 0 }
-    )
-  }, [])
-
   const normalizeStatus = useCallback((statusValue) => {
     const status = String(statusValue || "").trim().toLowerCase()
     if (status === "in progress" || status === "in_progress" || status === "inprogress") {
@@ -221,6 +200,31 @@ function ManagerDashboard() {
     }
     return "unknown"
   }, [])
+
+  const getStatusCounts = useCallback(
+    (items) => {
+      return items.reduce(
+        (acc, complaint) => {
+          const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
+          if (currentLevel !== "manager") {
+            return acc
+          }
+          const status = normalizeStatus(complaint?.status)
+          acc.total += 1
+          if (status === "pending") {
+            acc.pending += 1
+          } else if (status === "resolved") {
+            acc.resolved += 1
+          } else if (status === "inProgress") {
+            acc.inProgress += 1
+          }
+          return acc
+        },
+        { total: 0, pending: 0, inProgress: 0, resolved: 0 }
+      )
+    },
+    [normalizeStatus]
+  )
 
   const getSolvedStatusClassName = useCallback(
     (statusValue) => (normalizeStatus(statusValue) === "resolved" ? "solved-status-input" : ""),
@@ -288,6 +292,7 @@ function ManagerDashboard() {
     const submittedLimit = Number(complaint?.time_limit_days)
 
     if (level === "manager" && Number.isFinite(submittedLimit) && submittedLimit > 0) {
+      let managerDeadlineUtc = null
       const escalatedAtValue = complaint?.escalated_to_manager_at
       const escalatedAt = new Date(escalatedAtValue)
       if (!Number.isNaN(escalatedAt.getTime())) {
@@ -296,19 +301,23 @@ function ManagerDashboard() {
           escalatedAt.getUTCMonth(),
           escalatedAt.getUTCDate()
         )
-        const managerDeadlineUtc = escalationUtc + submittedLimit * msPerDay
-        return Math.round((managerDeadlineUtc - currentUtc) / msPerDay)
+        managerDeadlineUtc = escalationUtc + submittedLimit * msPerDay
       }
 
-      // Backward compatibility for complaints escalated before timestamp tracking was added.
-      const fallbackDeadline = new Date(complaint?.deadline_date)
-      if (!Number.isNaN(fallbackDeadline.getTime())) {
-        const fallbackDeadlineUtc = Date.UTC(
-          fallbackDeadline.getUTCFullYear(),
-          fallbackDeadline.getUTCMonth(),
-          fallbackDeadline.getUTCDate()
+      const docDeadline = new Date(complaint?.deadline_date)
+      if (!Number.isNaN(docDeadline.getTime())) {
+        const docDeadlineUtc = Date.UTC(
+          docDeadline.getUTCFullYear(),
+          docDeadline.getUTCMonth(),
+          docDeadline.getUTCDate()
         )
-        return Math.round((fallbackDeadlineUtc - currentUtc) / msPerDay)
+        if (!managerDeadlineUtc || docDeadlineUtc > managerDeadlineUtc) {
+          managerDeadlineUtc = docDeadlineUtc
+        }
+      }
+
+      if (managerDeadlineUtc) {
+        return Math.round((managerDeadlineUtc - currentUtc) / msPerDay)
       }
     }
 
@@ -329,7 +338,7 @@ function ManagerDashboard() {
     const currentPortal = getPortalLabel(complaint?.current_level || "Manager")
     const nextPortal = getNextPortalLabel(complaint?.current_level || "Manager")
     const overdueDays = Math.abs(remainingDays)
-    return `Now in ${currentPortal} -> ${nextPortal} in ${overdueDays} Day${overdueDays === 1 ? "" : "s"} (Overdue)`
+    return `Now in ${currentPortal} -> Moves to ${nextPortal} (${overdueDays} Day${overdueDays === 1 ? "" : "s"} Overdue)`
   }
 
   const getComplaintRemainingLabel = (complaint) => {
@@ -342,8 +351,8 @@ function ManagerDashboard() {
     if (remainingDays === null) {
       return "--"
     }
-    if (remainingDays > 1) {
-      return `${remainingDays} Days Remaining`
+    if (remainingDays > 0) {
+      return `${remainingDays} Day${remainingDays === 1 ? "" : "s"} Remaining`
     }
     if (remainingDays === 0) {
       return "Last Day"
@@ -502,8 +511,20 @@ function ManagerDashboard() {
     }
   }
 
-  const handleEscalateAll = () => {
-    console.log("Escalating all pending complaints")
+  const handleEscalateAll = async () => {
+    try {
+      const authToken = localStorage.getItem("authToken")
+      await fetch("http://localhost:5000/api/complaints/escalate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+      })
+      await fetchManagerComplaints()
+    } catch (err) {
+      console.error("Escalate all error:", err)
+    }
   }
 
   const openHistoryModal = (complaint) => {
@@ -979,9 +1000,7 @@ function ManagerDashboard() {
       const dateB = new Date(getSolvedDateValue(b) || b.submitted_date || b.created_date || 0).getTime()
       return dateB - dateA
     })
-  const allComplaints = [...assignedComplaints]
-    .filter((complaint) => normalizeStatus(complaint?.status) !== "resolved")
-    .sort((a, b) => {
+  const allComplaints = [...assignedComplaints].sort((a, b) => {
     const dateA = new Date(a.created_date || 0).getTime()
     const dateB = new Date(b.created_date || 0).getTime()
     return dateB - dateA
@@ -1146,7 +1165,10 @@ function ManagerDashboard() {
             key={stat.label}
             type="button"
             className={`stat-card tone-${stat.tone}`}
-            onClick={() => setActiveStatusFilter(stat.key)}
+            onClick={() => {
+              setActiveStatusFilter(stat.key)
+              setActiveTab("")
+            }}
           >
             <div className="stat-value">{stats[stat.key]}</div>
             <div className="stat-label">{stat.label}</div>

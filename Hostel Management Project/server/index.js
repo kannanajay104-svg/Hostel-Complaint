@@ -42,16 +42,43 @@ const isResolvedStatus = (statusValue) => {
 const getUtcStartOfDay = (date = new Date()) =>
   new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
 
-const autoEscalateWardenComplaintsToManager = async () => {
+const getManagerActiveDeadline = (complaint) => {
+  const timeLimitDaysValue = Number(complaint?.time_limit_days)
+  const timeLimitDays = Number.isFinite(timeLimitDaysValue) && timeLimitDaysValue > 0 ? timeLimitDaysValue : 1
+  const msPerDay = 24 * 60 * 60 * 1000
+
+  const escalatedAt = complaint?.escalated_to_manager_at ? new Date(complaint.escalated_to_manager_at) : null
+  const hasValidEscalatedAt = escalatedAt && !Number.isNaN(escalatedAt.getTime())
+
+  const deadlineDate = complaint?.deadline_date ? new Date(complaint.deadline_date) : null
+  const hasValidDeadline = deadlineDate && !Number.isNaN(deadlineDate.getTime())
+
+  if (hasValidDeadline && hasValidEscalatedAt && deadlineDate.getTime() > escalatedAt.getTime()) {
+    return deadlineDate
+  }
+
+  if (hasValidEscalatedAt) {
+    return new Date(escalatedAt.getTime() + timeLimitDays * msPerDay)
+  }
+
+  if (hasValidDeadline) {
+    return deadlineDate
+  }
+
+  const createdDate = complaint?.created_date ? new Date(complaint.created_date) : new Date()
+  return new Date(createdDate.getTime() + timeLimitDays * msPerDay)
+}
+
+const autoEscalateWardenComplaintsToManager = async ({ forceAll = false } = {}) => {
   const now = new Date()
 
-  const dueComplaints = await Complaint.find({
-    current_level: 'Warden',
-    deadline_date: { $lte: now },
+  const query = {
+    current_level: { $regex: /^warden$/i },
     status: { $nin: ['Solved', 'solved', 'Resolved', 'resolved'] },
-  })
-    .select('_id')
-    .lean()
+    ...(!forceAll ? { deadline_date: { $lte: now } } : {}),
+  }
+
+  const dueComplaints = await Complaint.find(query).lean()
 
   if (!dueComplaints || dueComplaints.length === 0) {
     return 0
@@ -59,16 +86,21 @@ const autoEscalateWardenComplaintsToManager = async () => {
 
   let count = 0
   for (const complaint of dueComplaints) {
+    const timeLimitDaysValue = Number(complaint?.time_limit_days)
+    const timeLimitDays = Number.isFinite(timeLimitDaysValue) && timeLimitDaysValue > 0 ? timeLimitDaysValue : 1
+    const managerDeadline = new Date(now.getTime() + timeLimitDays * 24 * 60 * 60 * 1000)
+
     const result = await Complaint.updateOne(
       {
         _id: complaint._id,
-        current_level: 'Warden',
+        current_level: { $regex: /^warden$/i },
         status: { $nin: ['Solved', 'solved', 'Resolved', 'resolved'] },
       },
       {
         $set: {
           current_level: 'Manager',
           escalated_to_manager_at: now,
+          deadline_date: managerDeadline,
           updatedAt: now,
         },
         $push: {
@@ -89,27 +121,13 @@ const autoEscalateWardenComplaintsToManager = async () => {
   return count
 }
 
-const getEscalationDueDate = (complaint, escalationField) => {
-  const escalationStart = complaint?.[escalationField] || complaint?.deadline_date
-  const parsedStart = new Date(escalationStart)
-  if (Number.isNaN(parsedStart.getTime())) {
-    return null
-  }
-
-  const timeLimitDaysValue = Number(complaint?.time_limit_days)
-  const timeLimitDays = Number.isFinite(timeLimitDaysValue) && timeLimitDaysValue > 0 ? timeLimitDaysValue : 1
-  return new Date(parsedStart.getTime() + timeLimitDays * 24 * 60 * 60 * 1000)
-}
-
-const autoEscalateManagerComplaintsToVicePrincipal = async () => {
+const autoEscalateManagerComplaintsToVicePrincipal = async ({ forceAll = false } = {}) => {
   const now = new Date()
 
   const managerComplaints = await Complaint.find({
-    current_level: 'Manager',
+    current_level: { $regex: /^manager$/i },
     status: { $nin: ['Solved', 'solved', 'Resolved', 'resolved'] },
-  })
-    .select('_id status deadline_date time_limit_days escalated_to_manager_at')
-    .lean()
+  }).lean()
 
   if (!managerComplaints || managerComplaints.length === 0) {
     return 0
@@ -119,22 +137,30 @@ const autoEscalateManagerComplaintsToVicePrincipal = async () => {
     if (isResolvedStatus(complaint.status)) {
       return false
     }
-    const dueDate = getEscalationDueDate(complaint, 'escalated_to_manager_at')
+    if (forceAll) {
+      return true
+    }
+    const dueDate = getManagerActiveDeadline(complaint)
     return Boolean(dueDate && dueDate <= now)
   })
 
   let count = 0
   for (const complaint of complaintsToEscalate) {
+    const timeLimitDaysValue = Number(complaint?.time_limit_days)
+    const timeLimitDays = Number.isFinite(timeLimitDaysValue) && timeLimitDaysValue > 0 ? timeLimitDaysValue : 1
+    const vpDeadline = new Date(now.getTime() + timeLimitDays * 24 * 60 * 60 * 1000)
+
     const result = await Complaint.updateOne(
       {
         _id: complaint._id,
-        current_level: 'Manager',
+        current_level: { $regex: /^manager$/i },
         status: { $nin: ['Solved', 'solved', 'Resolved', 'resolved'] },
       },
       {
         $set: {
           current_level: 'VicePrincipal',
           escalated_to_viceprincipal_at: now,
+          deadline_date: vpDeadline,
           updatedAt: now,
         },
         $push: {
@@ -155,10 +181,62 @@ const autoEscalateManagerComplaintsToVicePrincipal = async () => {
   return count
 }
 
-const runAutoEscalation = async () => {
+const normalizeLegacyComplaints = async () => {
+  const now = new Date()
+
+  // 1. Normalize any legacy Principal complaints to VicePrincipal
+  const legacyPrincipal = await Complaint.find({
+    current_level: { $regex: /^principal$/i },
+  }).select('_id current_level status time_limit_days escalated_to_viceprincipal_at deadline_date').lean()
+
+  if (legacyPrincipal && legacyPrincipal.length > 0) {
+    for (const c of legacyPrincipal) {
+      const timeLimitDays = Number(c?.time_limit_days) || 1
+      const escalatedAt = c.escalated_to_viceprincipal_at ? new Date(c.escalated_to_viceprincipal_at) : now
+      const vpDeadline = new Date(escalatedAt.getTime() + timeLimitDays * 24 * 60 * 60 * 1000)
+
+      await Complaint.updateOne(
+        { _id: c._id },
+        {
+          $set: {
+            current_level: 'VicePrincipal',
+            escalated_to_viceprincipal_at: c.escalated_to_viceprincipal_at || now,
+            deadline_date: c.deadline_date && new Date(c.deadline_date) > escalatedAt ? c.deadline_date : vpDeadline,
+            updatedAt: now,
+          },
+        }
+      )
+    }
+    console.log(`Normalized ${legacyPrincipal.length} legacy complaint(s) from Principal to Vice Principal.`)
+  }
+
+  // 2. Synchronize active deadline for any Manager complaints that still have old Warden deadline
+  const managerComplaints = await Complaint.find({
+    current_level: { $regex: /^manager$/i },
+    escalated_to_manager_at: { $ne: null },
+  }).select('_id deadline_date escalated_to_manager_at time_limit_days').lean()
+
+  if (managerComplaints && managerComplaints.length > 0) {
+    for (const c of managerComplaints) {
+      const escalatedAt = new Date(c.escalated_to_manager_at)
+      const currentDeadline = c.deadline_date ? new Date(c.deadline_date) : null
+      if (!currentDeadline || currentDeadline.getTime() <= escalatedAt.getTime()) {
+        const timeLimitDays = Number(c.time_limit_days) || 1
+        const managerDeadline = new Date(escalatedAt.getTime() + timeLimitDays * 24 * 60 * 60 * 1000)
+        await Complaint.updateOne(
+          { _id: c._id },
+          { $set: { deadline_date: managerDeadline, updatedAt: now } }
+        )
+      }
+    }
+  }
+}
+
+const runAutoEscalation = async ({ forceAll = false } = {}) => {
   try {
-    const escalatedWardenCount = await autoEscalateWardenComplaintsToManager()
-    const escalatedManagerCount = await autoEscalateManagerComplaintsToVicePrincipal()
+    await normalizeLegacyComplaints()
+    const escalatedWardenCount = await autoEscalateWardenComplaintsToManager({ forceAll })
+    const escalatedManagerCount = await autoEscalateManagerComplaintsToVicePrincipal({ forceAll })
     if (escalatedWardenCount > 0) {
       console.log(`Auto escalation moved ${escalatedWardenCount} complaint(s) from Warden to Manager.`)
     }
@@ -951,8 +1029,8 @@ app.get('/api/manager/complaints', authenticateToken, requireRole('manager'), as
 
     const complaints = await Complaint.find({
       $or: [
-        { current_level: 'Manager' },
-        { current_level: 'VicePrincipal', escalated_to_manager_at: { $ne: null } },
+        { current_level: { $regex: /^manager$/i } },
+        { current_level: { $regex: /^viceprincipal$/i }, escalated_to_manager_at: { $ne: null } },
       ],
     })
       .sort({ created_date: -1 })
@@ -1007,8 +1085,8 @@ app.get('/api/complaints/manager', authenticateToken, requireRole('manager'), as
 
     const complaints = await Complaint.find({
       $or: [
-        { current_level: 'Manager' },
-        { current_level: 'VicePrincipal', escalated_to_manager_at: { $ne: null } },
+        { current_level: { $regex: /^manager$/i } },
+        { current_level: { $regex: /^viceprincipal$/i }, escalated_to_manager_at: { $ne: null } },
       ],
     })
       .sort({ created_date: -1 })
@@ -1061,7 +1139,7 @@ app.get('/api/viceprincipal/complaints', authenticateToken, requireRole('vicepri
   try {
     await runAutoEscalation()
 
-    const complaints = await Complaint.find({ current_level: 'VicePrincipal' })
+    const complaints = await Complaint.find({ current_level: { $regex: /^viceprincipal$/i } })
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -1112,7 +1190,7 @@ app.get('/api/complaints/viceprincipal', authenticateToken, requireRole('vicepri
   try {
     await runAutoEscalation()
 
-    const complaints = await Complaint.find({ current_level: 'VicePrincipal' })
+    const complaints = await Complaint.find({ current_level: { $regex: /^viceprincipal$/i } })
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -1163,7 +1241,8 @@ app.get('/api/complaints/viceprincipal', authenticateToken, requireRole('vicepri
 
 app.post('/api/complaints/escalate', authenticateToken, async (req, res) => {
   try {
-    const result = await runAutoEscalation()
+    const forceAll = req.body?.force === true || req.query?.force === 'true'
+    const result = await runAutoEscalation({ forceAll })
     return res.json({ message: 'Escalation executed.', result })
   } catch (error) {
     console.error('Manual escalation error:', error.message)
@@ -1173,7 +1252,8 @@ app.post('/api/complaints/escalate', authenticateToken, async (req, res) => {
 
 app.post('/complaints/escalate', authenticateToken, async (req, res) => {
   try {
-    const result = await runAutoEscalation()
+    const forceAll = req.body?.force === true || req.query?.force === 'true'
+    const result = await runAutoEscalation({ forceAll })
     return res.json({ message: 'Escalation executed.', result })
   } catch (error) {
     console.error('Manual escalation error:', error.message)

@@ -6,15 +6,15 @@ const portalLabels = {
   viceprincipal: "Vice Principal Portal",
 }
 
-const normalizePortalKey = (value) => {
-  const normalized = String(value || "").trim().toLowerCase()
+export const normalizePortalKey = (value) => {
+  const clean = String(value || "").trim().toLowerCase().replace(/[\s_-]/g, "")
 
-  if (normalized === "vice principal" || normalized === "vice-principal") {
+  if (clean === "viceprincipal" || clean === "principal") {
     return "viceprincipal"
   }
 
-  if (portalLabels[normalized]) {
-    return normalized
+  if (clean === "manager") {
+    return "manager"
   }
 
   return "warden"
@@ -39,8 +39,18 @@ export const formatPortalCountdownLabel = (remainingDays, nextPortalLabel) => {
   const dayCount = Math.abs(remainingDays)
   const dayLabel = dayCount === 1 ? "Day" : "Days"
 
+  if (nextPortalLabel === "Final Review") {
+    if (remainingDays < 0) {
+      return `${dayCount} ${dayLabel} Overdue`
+    }
+    if (remainingDays === 0) {
+      return `Last Day`
+    }
+    return `${remainingDays} ${dayLabel} Remaining`
+  }
+
   if (remainingDays < 0) {
-    return `Overdue for ${nextPortalLabel} by ${dayCount} ${dayLabel}`
+    return `Moves to ${nextPortalLabel} (${dayCount} ${dayLabel} Overdue)`
   }
 
   if (remainingDays === 0) {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { getNextPortalLabel, getPortalLabel } from "../utils/complaintPortalStatus.js"
+import { getNextPortalLabel, getPortalLabel, normalizePortalKey } from "../utils/complaintPortalStatus.js"
 
 const quickActions = [
   { id: "submit", label: "Submit Complaint", icon: "+" },
@@ -225,16 +225,13 @@ function StudentDashboard() {
     return items.reduce(
       (acc, complaint) => {
         const status = String(complaint?.status || "").trim().toLowerCase()
+        acc.total += 1
         if (status === "pending") {
           acc.pending += 1
-          acc.total += 1
         } else if (status === "resolved" || status === "solved") {
           acc.resolved += 1
         } else if (status === "in progress" || status === "in_progress" || status === "inprogress") {
           acc.inProgress += 1
-          acc.total += 1
-        } else {
-          acc.total += 1
         }
         return acc
       },
@@ -549,22 +546,35 @@ function StudentDashboard() {
       })
     }
     if (activeComplaintView === "Total") {
-      return complaints.filter((complaint) => String(complaint?.status || "").trim().toLowerCase() !== "solved")
+      return [...complaints].sort((a, b) => {
+        const dateA = new Date(a.created_date || a.submitted_date || 0).getTime()
+        const dateB = new Date(b.created_date || b.submitted_date || 0).getTime()
+        return dateB - dateA
+      })
     }
     if (activeComplaintView === "Pending") {
-      return complaints.filter((complaint) => String(complaint?.status || "").trim() === "Pending")
+      return complaints.filter(
+        (complaint) => String(complaint?.status || "").trim().toLowerCase() === "pending"
+      )
     }
     if (activeComplaintView === "In Progress") {
-      return complaints.filter((complaint) => String(complaint?.status || "").trim() === "In Progress")
+      return complaints.filter((complaint) => {
+        const s = String(complaint?.status || "").trim().toLowerCase()
+        return s === "in progress" || s === "in_progress" || s === "inprogress"
+      })
     }
     if (activeComplaintView === "Resolved") {
-      return complaints.filter(
-        (complaint) => String(complaint?.status || "").trim().toLowerCase() === "solved"
-      )
+      return complaints.filter((complaint) => {
+        const s = String(complaint?.status || "").trim().toLowerCase()
+        return s === "solved" || s === "resolved"
+      })
     }
     if (activeComplaintView === "History") {
       return complaints
-        .filter((complaint) => String(complaint?.status || "").trim().toLowerCase() === "solved")
+        .filter((complaint) => {
+          const s = String(complaint?.status || "").trim().toLowerCase()
+          return s === "solved" || s === "resolved"
+        })
         .sort((a, b) => {
           const dateA = new Date(getSolvedDateValue(a) || 0).getTime()
           const dateB = new Date(getSolvedDateValue(b) || 0).getTime()
@@ -706,50 +716,46 @@ function StudentDashboard() {
 
     const msPerDay = 1000 * 60 * 60 * 24
     const currentUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
-    const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
+    const currentLevel = normalizePortalKey(complaint?.current_level)
     const timeLimitValue = Number(complaint?.time_limit_days)
-    const timeLimitDays = Number.isFinite(timeLimitValue) && timeLimitValue > 0 ? timeLimitValue : null
+    const timeLimitDays = Number.isFinite(timeLimitValue) && timeLimitValue > 0 ? timeLimitValue : 1
 
-    const calculateEscalationRemainingDays = (escalatedAtValue) => {
-      if (!timeLimitDays || !escalatedAtValue) {
+    const calculateEscalationDeadline = (escalatedAtValue) => {
+      if (!escalatedAtValue) {
         return null
       }
       const escalatedAt = new Date(escalatedAtValue)
       if (Number.isNaN(escalatedAt.getTime())) {
         return null
       }
-
-      const escalationUtc = Date.UTC(
-        escalatedAt.getUTCFullYear(),
-        escalatedAt.getUTCMonth(),
-        escalatedAt.getUTCDate()
-      )
-      const deadlineUtc = escalationUtc + timeLimitDays * msPerDay
-      return Math.round((deadlineUtc - currentUtc) / msPerDay)
+      return new Date(escalatedAt.getTime() + timeLimitDays * msPerDay)
     }
+
+    const docDeadline = complaint?.deadline_date ? new Date(complaint.deadline_date) : null
+    const validDocDeadline = docDeadline && !Number.isNaN(docDeadline.getTime()) ? docDeadline : null
+
+    let targetDeadline = validDocDeadline
 
     if (currentLevel === "manager") {
-      const managerDays = calculateEscalationRemainingDays(complaint?.escalated_to_manager_at)
-      if (managerDays !== null) {
-        return managerDays
+      const managerDeadline = calculateEscalationDeadline(complaint?.escalated_to_manager_at)
+      if (managerDeadline) {
+        targetDeadline = (!validDocDeadline || managerDeadline > validDocDeadline) ? managerDeadline : validDocDeadline
+      }
+    } else if (currentLevel === "viceprincipal") {
+      const vpDeadline = calculateEscalationDeadline(complaint?.escalated_to_viceprincipal_at)
+      if (vpDeadline) {
+        targetDeadline = (!validDocDeadline || vpDeadline > validDocDeadline) ? vpDeadline : validDocDeadline
       }
     }
 
-    if (currentLevel === "viceprincipal") {
-      const vicePrincipalDays = calculateEscalationRemainingDays(complaint?.escalated_to_viceprincipal_at)
-      if (vicePrincipalDays !== null) {
-        return vicePrincipalDays
-      }
-    }
-
-    const parsedDeadline = new Date(complaint?.deadline_date)
-    if (Number.isNaN(parsedDeadline.getTime())) {
+    if (!targetDeadline) {
       return null
     }
+
     const deadlineUtc = Date.UTC(
-      parsedDeadline.getUTCFullYear(),
-      parsedDeadline.getUTCMonth(),
-      parsedDeadline.getUTCDate()
+      targetDeadline.getUTCFullYear(),
+      targetDeadline.getUTCMonth(),
+      targetDeadline.getUTCDate()
     )
     return Math.round((deadlineUtc - currentUtc) / msPerDay)
   }
@@ -935,9 +941,9 @@ function StudentDashboard() {
     const nextPortal = getNextPortalLabel(complaint?.current_level || "Warden")
     const overdueDays = Math.abs(remainingDays)
     if (nextPortal === "Final Review") {
-      return `${currentPortal.replace(" Portal", "")} - ${overdueDays} Day${overdueDays === 1 ? "" : "s"} Overdue`
+      return `${currentPortal} - ${overdueDays} Day${overdueDays === 1 ? "" : "s"} Overdue`
     }
-    return `Now in ${currentPortal} -> ${nextPortal} in ${overdueDays} Day${overdueDays === 1 ? "" : "s"} (Overdue)`
+    return `Now in ${currentPortal} -> Moves to ${nextPortal} (${overdueDays} Day${overdueDays === 1 ? "" : "s"} Overdue)`
   }
 
   const getComplaintRemainingLabel = (complaint) => {
@@ -950,16 +956,12 @@ function StudentDashboard() {
     if (remainingDays === null) {
       return "--"
     }
+    const currentPortal = getPortalLabel(complaint?.current_level || "Warden")
     if (remainingDays > 0) {
-      const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-      if (currentLevel && currentLevel !== "warden") {
-        const portalName = getPortalLabel(complaint?.current_level).replace(" Portal", "")
-        return `${portalName} - ${remainingDays} Day${remainingDays === 1 ? "" : "s"}`
-      }
-      return `${remainingDays} Day${remainingDays === 1 ? "" : "s"} Remaining`
+      return `${currentPortal} - ${remainingDays} Day${remainingDays === 1 ? "" : "s"}`
     }
     if (remainingDays === 0) {
-      return "Last Day"
+      return `${currentPortal} - Last Day`
     }
     return getOverduePortalMessage(complaint, remainingDays)
   }

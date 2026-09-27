@@ -186,27 +186,6 @@ function WardenDashboard() {
     }
   }, [statusUpdateNotice])
 
-  const getStatusCounts = useCallback((items) => {
-    return items.reduce(
-      (acc, complaint) => {
-        const status = String(complaint?.status || "").trim().toLowerCase()
-        if (status === "pending") {
-          acc.pending += 1
-          acc.total += 1
-        } else if (status === "resolved" || status === "solved") {
-          acc.resolved += 1
-        } else if (status === "in progress" || status === "in_progress" || status === "inprogress") {
-          acc.inProgress += 1
-          acc.total += 1
-        } else {
-          acc.total += 1
-        }
-        return acc
-      },
-      { total: 0, pending: 0, inProgress: 0, resolved: 0 }
-    )
-  }, [])
-
   const normalizeStatus = useCallback((statusValue) => {
     const status = String(statusValue || "").trim().toLowerCase()
     if (status === "in progress" || status === "in_progress" || status === "inprogress") {
@@ -220,6 +199,31 @@ function WardenDashboard() {
     }
     return "unknown"
   }, [])
+
+  const getStatusCounts = useCallback(
+    (items) => {
+      return items.reduce(
+        (acc, complaint) => {
+          const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
+          const status = normalizeStatus(complaint?.status)
+          if (status === "resolved") {
+            acc.resolved += 1
+            acc.total += 1
+          } else if (currentLevel === "warden") {
+            acc.total += 1
+            if (status === "pending") {
+              acc.pending += 1
+            } else if (status === "inProgress") {
+              acc.inProgress += 1
+            }
+          }
+          return acc
+        },
+        { total: 0, pending: 0, inProgress: 0, resolved: 0 }
+      )
+    },
+    [normalizeStatus]
+  )
 
   const getSolvedStatusClassName = useCallback(
     (statusValue) => (normalizeStatus(statusValue) === "resolved" ? "solved-status-input" : ""),
@@ -298,7 +302,7 @@ function WardenDashboard() {
     const currentPortal = getPortalLabel(complaint?.current_level || "Warden")
     const nextPortal = getNextPortalLabel(complaint?.current_level || "Warden")
     const overdueDays = Math.abs(remainingDays)
-    return `Now in ${currentPortal} -> ${nextPortal} in ${overdueDays} Day${overdueDays === 1 ? "" : "s"} (Overdue)`
+    return `Now in ${currentPortal} -> Moves to ${nextPortal} (${overdueDays} Day${overdueDays === 1 ? "" : "s"} Overdue)`
   }
 
   const getComplaintRemainingLabel = (complaint) => {
@@ -311,8 +315,8 @@ function WardenDashboard() {
     if (remainingDays === null) {
       return "--"
     }
-    if (remainingDays > 1) {
-      return `${remainingDays} Days Remaining`
+    if (remainingDays > 0) {
+      return `${remainingDays} Day${remainingDays === 1 ? "" : "s"} Remaining`
     }
     if (remainingDays === 0) {
       return "Last Day"
@@ -458,8 +462,20 @@ function WardenDashboard() {
     }
   }
 
-  const handleEscalateAll = () => {
-    console.log("Escalating all pending complaints")
+  const handleEscalateAll = async () => {
+    try {
+      const authToken = localStorage.getItem("authToken")
+      await fetch("http://localhost:5000/api/complaints/escalate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+      })
+      await fetchWardenComplaints()
+    } catch (err) {
+      console.error("Escalate all error:", err)
+    }
   }
 
   const openHistoryModal = (complaint) => {
@@ -681,24 +697,23 @@ function WardenDashboard() {
     }
   }
 
-  const assignedComplaints = complaints.filter((complaint) => {
-    const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-    return currentLevel === "warden"
+  const wardenActiveComplaints = complaints.filter((complaint) => {
+    return String(complaint?.current_level || "").trim().toLowerCase() === "warden"
   })
 
-  const pendingComplaints = assignedComplaints.filter((complaint) => {
+  const pendingComplaints = wardenActiveComplaints.filter((complaint) => {
     return normalizeStatus(complaint?.status) === "pending"
   })
 
-  const inProgressComplaints = assignedComplaints.filter((complaint) => {
+  const inProgressComplaints = wardenActiveComplaints.filter((complaint) => {
     return normalizeStatus(complaint?.status) === "inProgress"
   })
 
-  const resolvedComplaints = assignedComplaints.filter((complaint) => {
+  const resolvedComplaints = complaints.filter((complaint) => {
     return normalizeStatus(complaint?.status) === "resolved"
   })
 
-  const urgentComplaints = assignedComplaints
+  const urgentComplaints = wardenActiveComplaints
     .filter((complaint) => {
       if (normalizeStatus(complaint?.status) === "resolved") {
         return false
@@ -922,16 +937,17 @@ function WardenDashboard() {
   const showPendingComplaints = activeTab === "pendingView"
   const showDeadlineComplaints = activeTab === "deadline"
   const showHistoryComplaints = activeTab === "history"
-  const historyComplaints = assignedComplaints
+  const historyComplaints = complaints
     .filter((complaint) => normalizeStatus(complaint?.status) === "resolved")
     .sort((a, b) => {
       const dateA = new Date(getSolvedDateValue(a) || a.submitted_date || a.created_date || 0).getTime()
       const dateB = new Date(getSolvedDateValue(b) || b.submitted_date || b.created_date || 0).getTime()
       return dateB - dateA
     })
-  const allComplaints = [...assignedComplaints]
-    .filter((complaint) => normalizeStatus(complaint?.status) !== "resolved")
-    .sort((a, b) => {
+  const allComplaints = [
+    ...wardenActiveComplaints.filter((complaint) => normalizeStatus(complaint?.status) !== "resolved"),
+    ...resolvedComplaints,
+  ].sort((a, b) => {
     const dateA = new Date(a.created_date || 0).getTime()
     const dateB = new Date(b.created_date || 0).getTime()
     return dateB - dateA
@@ -970,9 +986,11 @@ function WardenDashboard() {
       : showDeadlineComplaints
         ? nearDeadlineComplaints
         : []
-  const hasVisibleComplaints = showHistoryComplaints
-    ? historyComplaints.length > 0
-    : visibleComplaints.length > 0
+  const hasVisibleComplaints = isStatusFilteredView
+    ? visibleComplaints.length > 0
+    : showHistoryComplaints
+      ? historyComplaints.length > 0
+      : visibleComplaints.length > 0
   const emptyMessageKey = isStatusFilteredView ? activeStatusFilter : activeTab
   const emptyMessage = emptyPanelMessages[emptyMessageKey] || emptyPanelMessages.total
 
@@ -1100,7 +1118,10 @@ function WardenDashboard() {
             key={stat.label}
             type="button"
             className={`stat-card tone-${stat.tone}`}
-            onClick={() => setActiveStatusFilter(stat.key)}
+            onClick={() => {
+              setActiveStatusFilter(stat.key)
+              setActiveTab("")
+            }}
           >
             <div className="stat-value">{stats[stat.key]}</div>
             <div className="stat-label">{stat.label}</div>

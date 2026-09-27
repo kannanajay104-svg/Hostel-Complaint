@@ -771,7 +771,7 @@ function ManagerDashboard() {
       }
       const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
       return (
-        (currentLevel === "viceprincipal" || currentLevel === "principal") &&
+        currentLevel === "viceprincipal" &&
         Boolean(complaint?.escalated_to_manager_at)
       )
     })
@@ -1117,8 +1117,7 @@ function ManagerDashboard() {
             <div className="welcome-urgent" role="alert" aria-live="assertive">
               {movedPortalAlerts.map((complaint, index) => {
                 const complaintName = complaint.complaint_title || complaint.title || complaint.issue || "Untitled"
-                const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-                const movedPortalLabel = currentLevel === "principal" ? "Principal" : "Vice Principal"
+                const movedPortalLabel = "Vice Principal"
                 return (
                   <button
                     key={`moved-${complaint.id || complaint._id || `${complaintName}-${index}`}`}

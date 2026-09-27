@@ -11,8 +11,6 @@ import WardenDashboard from "./pages/WardenDashboard.jsx"
 import WardenProfile from "./pages/WardenProfile.jsx"
 import VicePrincipalDashboard from "./pages/VicePrincipalDashboard.jsx"
 import VicePrincipalProfile from "./pages/VicePrincipalProfile.jsx"
-import PrincipalDashboard from "./pages/PrincipalDashboard.jsx"
-import PrincipalProfile from "./pages/PrincipalProfile.jsx"
 
 function App() {
   return (
@@ -87,24 +85,6 @@ function App() {
         element={
           <ProtectedRoute role="viceprincipal">
             <RoleDashboard title="Vice Principal Dashboard" roleLabel="Vice Principal" />
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/principal-dashboard"
-        element={
-          <ProtectedRoute role="principal">
-            <PrincipalDashboard />
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/principal-profile"
-        element={
-          <ProtectedRoute role="principal">
-            <PrincipalProfile />
           </ProtectedRoute>
         }
       />

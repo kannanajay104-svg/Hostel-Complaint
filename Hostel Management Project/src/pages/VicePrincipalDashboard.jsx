@@ -771,19 +771,7 @@ function VicePrincipalDashboard() {
       return (remainingA ?? 99) - (remainingB ?? 99)
     })
 
-  const movedPortalAlerts = complaints
-    .filter((complaint) => {
-      if (normalizeStatus(complaint?.status) === "resolved") {
-        return false
-      }
-      const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-      return currentLevel === "principal" && Boolean(complaint?.escalated_to_viceprincipal_at)
-    })
-    .sort((a, b) => {
-      const dateA = new Date(a.updatedAt || a.created_date || 0).getTime()
-      const dateB = new Date(b.updatedAt || b.created_date || 0).getTime()
-      return dateB - dateA
-    })
+
 
   const extendableComplaints = pendingComplaints
 
@@ -1117,23 +1105,7 @@ function VicePrincipalDashboard() {
               })}
             </div>
           )}
-          {movedPortalAlerts.length > 0 && (
-            <div className="welcome-urgent" role="alert" aria-live="assertive">
-              {movedPortalAlerts.map((complaint, index) => {
-                const complaintName = complaint.complaint_title || complaint.title || complaint.issue || "Untitled"
-                return (
-                  <button
-                    key={`moved-${complaint.id || complaint._id || `${complaintName}-${index}`}`}
-                    type="button"
-                    className="welcome-urgent-item"
-                    onClick={() => openUrgentComplaintModal(complaint)}
-                  >
-                    {complaintName} - This complaint was went to Principal portal.
-                  </button>
-                )
-              })}
-            </div>
-          )}
+
         </div>
       </section>
 

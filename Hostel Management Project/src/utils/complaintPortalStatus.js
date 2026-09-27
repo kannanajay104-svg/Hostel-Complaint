@@ -1,10 +1,9 @@
-const portalOrder = ["warden", "manager", "viceprincipal", "principal"]
+const portalOrder = ["warden", "manager", "viceprincipal"]
 
 const portalLabels = {
   warden: "Warden Portal",
   manager: "Manager Portal",
   viceprincipal: "Vice Principal Portal",
-  principal: "Principal Portal",
 }
 
 const normalizePortalKey = (value) => {

@@ -49,12 +49,15 @@ export const updateComplaintStatus = async (req, res) => {
     }
 
     if (role === 'warden') {
+      if (String(complaint.current_level || '').trim().toLowerCase() !== 'warden') {
+        return res.status(403).json({ message: 'This complaint has been escalated and is no longer assigned to Warden.' })
+      }
       if (actor.block && complaint.block !== actor.block) {
         return res.status(403).json({ message: 'You can update only complaints assigned to your block.' })
       }
     } else {
       const expectedLevel = role === 'manager' ? 'Manager' : 'VicePrincipal'
-      if (String(complaint.current_level || '').trim() !== expectedLevel) {
+      if (String(complaint.current_level || '').trim().toLowerCase() !== expectedLevel.toLowerCase()) {
         return res.status(403).json({ message: 'You can update only complaints assigned to you.' })
       }
     }
@@ -82,9 +85,18 @@ export const updateComplaintStatus = async (req, res) => {
         image_path: complaint.image_path,
         image: complaint.image_path,
         current_level: complaint.current_level,
+        assignedRole: complaint.current_level,
+        currentRole: complaint.current_level,
+        escalationLevel: complaint.current_level,
         submitted_date: complaint.created_date,
         created_date: complaint.created_date,
         deadline_date: complaint.deadline_date,
+        deadlineDate: complaint.deadline_date,
+        escalated_to_manager_at: complaint.escalated_to_manager_at,
+        escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
+        escalated_to_principal_at: complaint.escalated_to_principal_at,
+        escalation_history: complaint.escalation_history || [],
+        escalationHistory: complaint.escalation_history || [],
         solvedDate: complaint.solvedDate || complaint.solved_date || null,
         solved_date: complaint.solved_date,
         updatedAt: complaint.updatedAt,

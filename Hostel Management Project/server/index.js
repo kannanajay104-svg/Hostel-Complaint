@@ -28,9 +28,9 @@ const MONGODB_URI =
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-env'
 const JWT_EXPIRES_IN = '7d'
-const ESCALATION_CHECK_INTERVAL_MS = Number(process.env.ESCALATION_CHECK_INTERVAL_MS || 5 * 60 * 1000)
+const ESCALATION_CHECK_INTERVAL_MS = Number(process.env.ESCALATION_CHECK_INTERVAL_MS || 60 * 1000)
 
-const allowedRoles = ['student', 'warden', 'manager', 'viceprincipal', 'principal']
+const allowedRoles = ['student', 'warden', 'manager', 'viceprincipal']
 
 const normalizeStatus = (statusValue) => String(statusValue || '').trim().toLowerCase()
 
@@ -43,36 +43,50 @@ const getUtcStartOfDay = (date = new Date()) =>
   new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
 
 const autoEscalateWardenComplaintsToManager = async () => {
-  const todayUtcStart = getUtcStartOfDay(new Date())
-  const escalatedAt = new Date()
+  const now = new Date()
 
   const dueComplaints = await Complaint.find({
     current_level: 'Warden',
-    deadline_date: { $lte: todayUtcStart },
+    deadline_date: { $lte: now },
+    status: { $nin: ['Solved', 'solved', 'Resolved', 'resolved'] },
   })
-    .select('_id status')
+    .select('_id')
     .lean()
 
-  const complaintIdsToEscalate = dueComplaints
-    .filter((complaint) => !isResolvedStatus(complaint.status))
-    .map((complaint) => complaint._id)
-
-  if (complaintIdsToEscalate.length === 0) {
+  if (!dueComplaints || dueComplaints.length === 0) {
     return 0
   }
 
-  const result = await Complaint.updateMany(
-    { _id: { $in: complaintIdsToEscalate } },
-    {
-      $set: {
-        current_level: 'Manager',
-        escalated_to_manager_at: escalatedAt,
-        updatedAt: new Date(),
+  let count = 0
+  for (const complaint of dueComplaints) {
+    const result = await Complaint.updateOne(
+      {
+        _id: complaint._id,
+        current_level: 'Warden',
+        status: { $nin: ['Solved', 'solved', 'Resolved', 'resolved'] },
       },
+      {
+        $set: {
+          current_level: 'Manager',
+          escalated_to_manager_at: now,
+          updatedAt: now,
+        },
+        $push: {
+          escalation_history: {
+            from: 'Warden',
+            to: 'Manager',
+            escalated_at: now,
+            escalatedAt: now,
+          },
+        },
+      }
+    )
+    if (result.modifiedCount > 0) {
+      count += result.modifiedCount
     }
-  )
+  }
 
-  return result.modifiedCount || 0
+  return count
 }
 
 const getEscalationDueDate = (complaint, escalationField) => {
@@ -84,85 +98,81 @@ const getEscalationDueDate = (complaint, escalationField) => {
 
   const timeLimitDaysValue = Number(complaint?.time_limit_days)
   const timeLimitDays = Number.isFinite(timeLimitDaysValue) && timeLimitDaysValue > 0 ? timeLimitDaysValue : 1
-  const dueDate = getUtcStartOfDay(parsedStart)
-  dueDate.setUTCDate(dueDate.getUTCDate() + timeLimitDays)
-  return dueDate
+  return new Date(parsedStart.getTime() + timeLimitDays * 24 * 60 * 60 * 1000)
 }
 
 const autoEscalateManagerComplaintsToVicePrincipal = async () => {
-  const todayUtcStart = getUtcStartOfDay(new Date())
-  const escalatedAt = new Date()
+  const now = new Date()
 
   const managerComplaints = await Complaint.find({
     current_level: 'Manager',
+    status: { $nin: ['Solved', 'solved', 'Resolved', 'resolved'] },
   })
     .select('_id status deadline_date time_limit_days escalated_to_manager_at')
     .lean()
 
-  const complaintIdsToEscalate = managerComplaints
-    .filter((complaint) => {
-      if (isResolvedStatus(complaint.status)) {
-        return false
-      }
-      const dueDate = getEscalationDueDate(complaint, 'escalated_to_manager_at')
-      return Boolean(dueDate && dueDate <= todayUtcStart)
-    })
-    .map((complaint) => complaint._id)
-
-  if (complaintIdsToEscalate.length === 0) {
+  if (!managerComplaints || managerComplaints.length === 0) {
     return 0
   }
 
-  const result = await Complaint.updateMany(
-    { _id: { $in: complaintIdsToEscalate } },
-    {
-      $set: {
-        current_level: 'VicePrincipal',
-        escalated_to_viceprincipal_at: escalatedAt,
-        updatedAt: new Date(),
-      },
+  const complaintsToEscalate = managerComplaints.filter((complaint) => {
+    if (isResolvedStatus(complaint.status)) {
+      return false
     }
-  )
+    const dueDate = getEscalationDueDate(complaint, 'escalated_to_manager_at')
+    return Boolean(dueDate && dueDate <= now)
+  })
 
-  return result.modifiedCount || 0
+  let count = 0
+  for (const complaint of complaintsToEscalate) {
+    const result = await Complaint.updateOne(
+      {
+        _id: complaint._id,
+        current_level: 'Manager',
+        status: { $nin: ['Solved', 'solved', 'Resolved', 'resolved'] },
+      },
+      {
+        $set: {
+          current_level: 'VicePrincipal',
+          escalated_to_viceprincipal_at: now,
+          updatedAt: now,
+        },
+        $push: {
+          escalation_history: {
+            from: 'Manager',
+            to: 'Vice Principal',
+            escalated_at: now,
+            escalatedAt: now,
+          },
+        },
+      }
+    )
+    if (result.modifiedCount > 0) {
+      count += result.modifiedCount
+    }
+  }
+
+  return count
 }
 
-const autoEscalateVicePrincipalComplaintsToPrincipal = async () => {
-  const todayUtcStart = getUtcStartOfDay(new Date())
-  const escalatedAt = new Date()
-
-  const vicePrincipalComplaints = await Complaint.find({
-    current_level: 'VicePrincipal',
-  })
-    .select('_id status deadline_date time_limit_days escalated_to_viceprincipal_at')
-    .lean()
-
-  const complaintIdsToEscalate = vicePrincipalComplaints
-    .filter((complaint) => {
-      if (isResolvedStatus(complaint.status)) {
-        return false
-      }
-      const dueDate = getEscalationDueDate(complaint, 'escalated_to_viceprincipal_at')
-      return Boolean(dueDate && dueDate <= todayUtcStart)
-    })
-    .map((complaint) => complaint._id)
-
-  if (complaintIdsToEscalate.length === 0) {
-    return 0
-  }
-
-  const result = await Complaint.updateMany(
-    { _id: { $in: complaintIdsToEscalate } },
-    {
-      $set: {
-        current_level: 'Principal',
-        escalated_to_principal_at: escalatedAt,
-        updatedAt: new Date(),
-      },
+const runAutoEscalation = async () => {
+  try {
+    const escalatedWardenCount = await autoEscalateWardenComplaintsToManager()
+    const escalatedManagerCount = await autoEscalateManagerComplaintsToVicePrincipal()
+    if (escalatedWardenCount > 0) {
+      console.log(`Auto escalation moved ${escalatedWardenCount} complaint(s) from Warden to Manager.`)
     }
-  )
-
-  return result.modifiedCount || 0
+    if (escalatedManagerCount > 0) {
+      console.log(`Auto escalation moved ${escalatedManagerCount} complaint(s) from Manager to Vice Principal.`)
+    }
+    return {
+      warden: escalatedWardenCount,
+      manager: escalatedManagerCount,
+    }
+  } catch (error) {
+    console.error('Auto escalation run error:', error.message)
+    return { warden: 0, manager: 0 }
+  }
 }
 
 const signToken = (user) =>
@@ -420,15 +430,57 @@ app.post(
       room,
       complaint_title,
       description,
-      time_limit_days,
+      department,
+      complaintType,
     } = req.body
 
-    const parsedTimeLimit = Number(time_limit_days)
-    const hasTimeLimit = time_limit_days !== undefined && time_limit_days !== null && time_limit_days !== ""
-    if (hasTimeLimit && (!Number.isFinite(parsedTimeLimit) || parsedTimeLimit < 1)) {
-      return res.status(400).json({ message: 'Time limit must be at least 1 day.' })
+    if (!department || !String(department).trim()) {
+      return res.status(400).json({ message: 'Department is required.' })
     }
-    const timeLimitDays = hasTimeLimit && Number.isFinite(parsedTimeLimit) ? parsedTimeLimit : 4
+
+    const trimmedDept = String(department).trim()
+    const trimmedComplaintType = complaintType ? String(complaintType).trim() : ''
+
+    const allowedDepartments = ['Plumbing', 'Electrition', 'Cleaning', 'Food', 'Others']
+    if (!allowedDepartments.includes(trimmedDept)) {
+      return res.status(400).json({ message: 'Invalid department.' })
+    }
+
+    if (trimmedDept === 'Plumbing' || trimmedDept === 'Electrition') {
+      if (!trimmedComplaintType) {
+        return res.status(400).json({ message: `${trimmedDept} complaint type is required.` })
+      }
+    }
+
+    const calculateTimeLimit = (dept, cType) => {
+      if (dept === 'Plumbing') {
+        if (cType === 'Water is not coming') return 1
+        if (cType === 'Any repair complaint') return 4
+        return null
+      }
+      if (dept === 'Electrition') {
+        if (cType === 'Current cut') return 1
+        if (cType === 'Any repair complaint') return 2
+        return null
+      }
+      if (dept === 'Cleaning') {
+        return 2
+      }
+      if (dept === 'Food') {
+        return 1
+      }
+      if (dept === 'Others') {
+        return 4
+      }
+      return null
+    }
+
+    const calculatedLimit = calculateTimeLimit(trimmedDept, trimmedComplaintType)
+    if (calculatedLimit === null) {
+      return res.status(400).json({ message: 'Invalid department or complaint type.' })
+    }
+
+    const timeLimitDays = calculatedLimit
 
     if (!block || !floor || !complaint_title || !description) {
       return res.status(400).json({ message: 'Complaint details are required.' })
@@ -447,6 +499,9 @@ app.post(
       block: String(block).trim(),
       floor: String(floor).trim(),
       room: room ? String(room).trim() : '',
+      department: trimmedDept,
+      ...(trimmedComplaintType ? { complaintType: trimmedComplaintType } : {}),
+      timeLimit: timeLimitDays,
       complaint_title: String(complaint_title).trim(),
       description: String(description).trim(),
       image_path: `/uploads/${req.file.filename}`,
@@ -463,6 +518,9 @@ app.post(
       message: 'Complaint submitted successfully.',
       complaintId: complaint._id.toString(),
       timeLimitDays: complaint.time_limit_days,
+      timeLimit: complaint.timeLimit,
+      department: complaint.department,
+      complaintType: complaint.complaintType,
     })
   } catch (error) {
     console.error('Complaint submission error:', error.message, error.stack)
@@ -472,6 +530,8 @@ app.post(
 
 app.get('/complaints', authenticateToken, requireRole('student'), async (req, res) => {
   try {
+    await runAutoEscalation()
+
     const complaints = await Complaint.find({ student_id: req.user.id })
       .sort({ created_date: -1 })
       .lean()
@@ -481,7 +541,13 @@ app.get('/complaints', authenticateToken, requireRole('student'), async (req, re
       title: complaint.complaint_title,
       complaint_title: complaint.complaint_title,
       description: complaint.description,
+      department: complaint.department || null,
+      complaintType: complaint.complaintType || null,
+      timeLimit: complaint.timeLimit || complaint.time_limit_days,
       current_level: complaint.current_level,
+      assignedRole: complaint.current_level,
+      currentRole: complaint.current_level,
+      escalationLevel: complaint.current_level,
       block: complaint.block,
       floor: complaint.floor,
       room: complaint.room,
@@ -491,11 +557,14 @@ app.get('/complaints', authenticateToken, requireRole('student'), async (req, re
       status: complaint.status,
       submitted_date: complaint.created_date,
       deadline_date: complaint.deadline_date,
+      deadlineDate: complaint.deadline_date,
       time_limit_days: complaint.time_limit_days,
       created_date: complaint.created_date,
       escalated_to_manager_at: complaint.escalated_to_manager_at,
       escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
       escalated_to_principal_at: complaint.escalated_to_principal_at,
+      escalation_history: complaint.escalation_history || [],
+      escalationHistory: complaint.escalation_history || [],
       updatedAt: complaint.updatedAt,
       solvedDate: complaint.solvedDate || complaint.solved_date,
       solved_date: complaint.solved_date,
@@ -545,10 +614,6 @@ app.put('/api/complaints/:id/extend', authenticateToken, async (req, res) => {
       if (status !== 'pending' || currentLevel !== 'viceprincipal') {
         return res.status(403).json({ message: 'You cannot update this complaint.' })
       }
-    } else if (req.user.role === 'principal') {
-      if (status !== 'pending' || currentLevel !== 'principal') {
-        return res.status(403).json({ message: 'You cannot update this complaint.' })
-      }
     } else {
       return res.status(403).json({ message: 'Access denied for this role.' })
     }
@@ -581,7 +646,7 @@ app.put('/complaints/:id/status', authenticateToken, updateComplaintStatus)
 
 app.get('/complaints/warden', authenticateToken, requireRole('warden'), async (req, res) => {
   try {
-    await autoEscalateWardenComplaintsToManager()
+    await runAutoEscalation()
 
     const complaints = await Complaint.find({ current_level: 'Warden' })
       .sort({ created_date: -1 })
@@ -601,6 +666,7 @@ app.get('/complaints/warden', authenticateToken, requireRole('warden'), async (r
       room: complaint.room,
       room_no: complaint.room,
       deadline_date: complaint.deadline_date,
+      deadlineDate: complaint.deadline_date,
       submitted_date: complaint.created_date,
       created_date: complaint.created_date,
       updatedAt: complaint.updatedAt,
@@ -609,6 +675,15 @@ app.get('/complaints/warden', authenticateToken, requireRole('warden'), async (r
       solved_date: complaint.solved_date,
       image: complaint.image_path,
       image_path: complaint.image_path,
+      current_level: complaint.current_level,
+      assignedRole: complaint.current_level,
+      currentRole: complaint.current_level,
+      escalationLevel: complaint.current_level,
+      escalated_to_manager_at: complaint.escalated_to_manager_at,
+      escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
+      escalated_to_principal_at: complaint.escalated_to_principal_at,
+      escalation_history: complaint.escalation_history || [],
+      escalationHistory: complaint.escalation_history || [],
     }))
 
     return res.json({ complaints: response })
@@ -620,6 +695,8 @@ app.get('/complaints/warden', authenticateToken, requireRole('warden'), async (r
 
 app.get('/api/complaints/:id', authenticateToken, async (req, res) => {
   try {
+    await runAutoEscalation()
+
     const { id } = req.params
 
     const complaint = await Complaint.findById(id).populate('student_id', 'name').lean()
@@ -654,11 +731,6 @@ app.get('/api/complaints/:id', authenticateToken, async (req, res) => {
       if (!reachedVicePrincipalPortal) {
         return res.status(403).json({ message: 'You cannot access this complaint.' })
       }
-    } else if (req.user.role === 'principal') {
-      const reachedPrincipalPortal = Boolean(complaint.escalated_to_principal_at) || currentLevel === 'principal'
-      if (!reachedPrincipalPortal) {
-        return res.status(403).json({ message: 'You cannot access this complaint.' })
-      }
     } else {
       return res.status(403).json({ message: 'Access denied for this role.' })
     }
@@ -682,14 +754,23 @@ app.get('/api/complaints/:id', authenticateToken, async (req, res) => {
         created_date: complaint.created_date,
         updatedAt: complaint.updatedAt,
         deadline_date: complaint.deadline_date,
+        deadlineDate: complaint.deadline_date,
         time_limit_days: complaint.time_limit_days,
+        department: complaint.department || null,
+        complaintType: complaint.complaintType || null,
+        timeLimit: complaint.timeLimit || complaint.time_limit_days,
         status: complaint.status,
         solvedDate: complaint.solvedDate || complaint.solved_date,
         solved_date: complaint.solved_date,
         current_level: complaint.current_level,
+        assignedRole: complaint.current_level,
+        currentRole: complaint.current_level,
+        escalationLevel: complaint.current_level,
         escalated_to_manager_at: complaint.escalated_to_manager_at,
         escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
         escalated_to_principal_at: complaint.escalated_to_principal_at,
+        escalation_history: complaint.escalation_history || [],
+        escalationHistory: complaint.escalation_history || [],
       },
     })
   } catch (error) {
@@ -700,6 +781,8 @@ app.get('/api/complaints/:id', authenticateToken, async (req, res) => {
 
 app.get('/api/warden/complaints', authenticateToken, requireRole('warden'), async (req, res) => {
   try {
+    await runAutoEscalation()
+
     const complaints = await Complaint.find({ current_level: 'Warden', status: 'Pending' })
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
@@ -722,12 +805,21 @@ app.get('/api/warden/complaints', authenticateToken, requireRole('warden'), asyn
       image_path: complaint.image_path,
       submitted_date: complaint.created_date,
       deadline_date: complaint.deadline_date,
+      deadlineDate: complaint.deadline_date,
       created_date: complaint.created_date,
       updatedAt: complaint.updatedAt,
       status: complaint.status,
       solvedDate: complaint.solvedDate || complaint.solved_date,
       solved_date: complaint.solved_date,
       current_level: complaint.current_level,
+      assignedRole: complaint.current_level,
+      currentRole: complaint.current_level,
+      escalationLevel: complaint.current_level,
+      escalated_to_manager_at: complaint.escalated_to_manager_at,
+      escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
+      escalated_to_principal_at: complaint.escalated_to_principal_at,
+      escalation_history: complaint.escalation_history || [],
+      escalationHistory: complaint.escalation_history || [],
     }))
 
     return res.json({ complaints: response })
@@ -739,7 +831,7 @@ app.get('/api/warden/complaints', authenticateToken, requireRole('warden'), asyn
 
 app.get('/api/complaints', authenticateToken, requireRole('warden'), async (req, res) => {
   try {
-    await autoEscalateWardenComplaintsToManager()
+    await runAutoEscalation()
 
     const warden = await User.findById(req.user.id).lean()
     if (!warden) {
@@ -771,12 +863,21 @@ app.get('/api/complaints', authenticateToken, requireRole('warden'), async (req,
       image_path: complaint.image_path,
       submitted_date: complaint.created_date,
       deadline_date: complaint.deadline_date,
+      deadlineDate: complaint.deadline_date,
       created_date: complaint.created_date,
       updatedAt: complaint.updatedAt,
       status: complaint.status,
       solvedDate: complaint.solvedDate || complaint.solved_date,
       solved_date: complaint.solved_date,
       current_level: complaint.current_level,
+      assignedRole: complaint.current_level,
+      currentRole: complaint.current_level,
+      escalationLevel: complaint.current_level,
+      escalated_to_manager_at: complaint.escalated_to_manager_at,
+      escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
+      escalated_to_principal_at: complaint.escalated_to_principal_at,
+      escalation_history: complaint.escalation_history || [],
+      escalationHistory: complaint.escalation_history || [],
     }))
 
     return res.json({ complaints: response })
@@ -788,7 +889,7 @@ app.get('/api/complaints', authenticateToken, requireRole('warden'), async (req,
 
 app.get('/api/warden/complaints/all', authenticateToken, requireRole('warden'), async (req, res) => {
   try {
-    await autoEscalateWardenComplaintsToManager()
+    await runAutoEscalation()
 
     const warden = await User.findById(req.user.id).lean()
     if (!warden) {
@@ -820,12 +921,21 @@ app.get('/api/warden/complaints/all', authenticateToken, requireRole('warden'), 
       image_path: complaint.image_path,
       submitted_date: complaint.created_date,
       deadline_date: complaint.deadline_date,
+      deadlineDate: complaint.deadline_date,
       created_date: complaint.created_date,
       updatedAt: complaint.updatedAt,
       status: complaint.status,
       solvedDate: complaint.solvedDate || complaint.solved_date,
       solved_date: complaint.solved_date,
       current_level: complaint.current_level,
+      assignedRole: complaint.current_level,
+      currentRole: complaint.current_level,
+      escalationLevel: complaint.current_level,
+      escalated_to_manager_at: complaint.escalated_to_manager_at,
+      escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
+      escalated_to_principal_at: complaint.escalated_to_principal_at,
+      escalation_history: complaint.escalation_history || [],
+      escalationHistory: complaint.escalation_history || [],
     }))
 
     return res.json({ complaints: response })
@@ -837,9 +947,7 @@ app.get('/api/warden/complaints/all', authenticateToken, requireRole('warden'), 
 
 app.get('/api/manager/complaints', authenticateToken, requireRole('manager'), async (req, res) => {
   try {
-    await autoEscalateWardenComplaintsToManager()
-    await autoEscalateManagerComplaintsToVicePrincipal()
-    await autoEscalateVicePrincipalComplaintsToPrincipal()
+    await runAutoEscalation()
 
     const complaints = await Complaint.find({
       $or: [
@@ -865,6 +973,7 @@ app.get('/api/manager/complaints', authenticateToken, requireRole('manager'), as
       room_no: complaint.room,
       deadline: complaint.deadline_date,
       deadline_date: complaint.deadline_date,
+      deadlineDate: complaint.deadline_date,
       time_limit_days: complaint.time_limit_days,
       submitted_date: complaint.created_date,
       created_date: complaint.created_date,
@@ -875,7 +984,14 @@ app.get('/api/manager/complaints', authenticateToken, requireRole('manager'), as
       image: complaint.image_path,
       image_path: complaint.image_path,
       current_level: complaint.current_level,
+      assignedRole: complaint.current_level,
+      currentRole: complaint.current_level,
+      escalationLevel: complaint.current_level,
       escalated_to_manager_at: complaint.escalated_to_manager_at,
+      escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
+      escalated_to_principal_at: complaint.escalated_to_principal_at,
+      escalation_history: complaint.escalation_history || [],
+      escalationHistory: complaint.escalation_history || [],
     }))
 
     return res.json({ complaints: response })
@@ -887,9 +1003,7 @@ app.get('/api/manager/complaints', authenticateToken, requireRole('manager'), as
 
 app.get('/api/complaints/manager', authenticateToken, requireRole('manager'), async (req, res) => {
   try {
-    await autoEscalateWardenComplaintsToManager()
-    await autoEscalateManagerComplaintsToVicePrincipal()
-    await autoEscalateVicePrincipalComplaintsToPrincipal()
+    await runAutoEscalation()
 
     const complaints = await Complaint.find({
       $or: [
@@ -915,6 +1029,7 @@ app.get('/api/complaints/manager', authenticateToken, requireRole('manager'), as
       room_no: complaint.room,
       deadline: complaint.deadline_date,
       deadline_date: complaint.deadline_date,
+      deadlineDate: complaint.deadline_date,
       time_limit_days: complaint.time_limit_days,
       submitted_date: complaint.created_date,
       created_date: complaint.created_date,
@@ -925,7 +1040,14 @@ app.get('/api/complaints/manager', authenticateToken, requireRole('manager'), as
       image: complaint.image_path,
       image_path: complaint.image_path,
       current_level: complaint.current_level,
+      assignedRole: complaint.current_level,
+      currentRole: complaint.current_level,
+      escalationLevel: complaint.current_level,
       escalated_to_manager_at: complaint.escalated_to_manager_at,
+      escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
+      escalated_to_principal_at: complaint.escalated_to_principal_at,
+      escalation_history: complaint.escalation_history || [],
+      escalationHistory: complaint.escalation_history || [],
     }))
 
     return res.json({ complaints: response })
@@ -937,16 +1059,9 @@ app.get('/api/complaints/manager', authenticateToken, requireRole('manager'), as
 
 app.get('/api/viceprincipal/complaints', authenticateToken, requireRole('viceprincipal'), async (req, res) => {
   try {
-    await autoEscalateWardenComplaintsToManager()
-    await autoEscalateManagerComplaintsToVicePrincipal()
-    await autoEscalateVicePrincipalComplaintsToPrincipal()
+    await runAutoEscalation()
 
-    const complaints = await Complaint.find({
-      $or: [
-        { current_level: 'VicePrincipal' },
-        { current_level: 'Principal', escalated_to_viceprincipal_at: { $ne: null } },
-      ],
-    })
+    const complaints = await Complaint.find({ current_level: 'VicePrincipal' })
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -965,6 +1080,7 @@ app.get('/api/viceprincipal/complaints', authenticateToken, requireRole('vicepri
       room_no: complaint.room,
       deadline: complaint.deadline_date,
       deadline_date: complaint.deadline_date,
+      deadlineDate: complaint.deadline_date,
       time_limit_days: complaint.time_limit_days,
       submitted_date: complaint.created_date,
       created_date: complaint.created_date,
@@ -975,9 +1091,14 @@ app.get('/api/viceprincipal/complaints', authenticateToken, requireRole('vicepri
       image: complaint.image_path,
       image_path: complaint.image_path,
       current_level: complaint.current_level,
+      assignedRole: complaint.current_level,
+      currentRole: complaint.current_level,
+      escalationLevel: complaint.current_level,
       escalated_to_manager_at: complaint.escalated_to_manager_at,
       escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
       escalated_to_principal_at: complaint.escalated_to_principal_at,
+      escalation_history: complaint.escalation_history || [],
+      escalationHistory: complaint.escalation_history || [],
     }))
 
     return res.json({ complaints: response })
@@ -989,16 +1110,9 @@ app.get('/api/viceprincipal/complaints', authenticateToken, requireRole('vicepri
 
 app.get('/api/complaints/viceprincipal', authenticateToken, requireRole('viceprincipal'), async (req, res) => {
   try {
-    await autoEscalateWardenComplaintsToManager()
-    await autoEscalateManagerComplaintsToVicePrincipal()
-    await autoEscalateVicePrincipalComplaintsToPrincipal()
+    await runAutoEscalation()
 
-    const complaints = await Complaint.find({
-      $or: [
-        { current_level: 'VicePrincipal' },
-        { current_level: 'Principal', escalated_to_viceprincipal_at: { $ne: null } },
-      ],
-    })
+    const complaints = await Complaint.find({ current_level: 'VicePrincipal' })
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -1017,6 +1131,7 @@ app.get('/api/complaints/viceprincipal', authenticateToken, requireRole('vicepri
       room_no: complaint.room,
       deadline: complaint.deadline_date,
       deadline_date: complaint.deadline_date,
+      deadlineDate: complaint.deadline_date,
       time_limit_days: complaint.time_limit_days,
       submitted_date: complaint.created_date,
       created_date: complaint.created_date,
@@ -1027,9 +1142,14 @@ app.get('/api/complaints/viceprincipal', authenticateToken, requireRole('vicepri
       image: complaint.image_path,
       image_path: complaint.image_path,
       current_level: complaint.current_level,
+      assignedRole: complaint.current_level,
+      currentRole: complaint.current_level,
+      escalationLevel: complaint.current_level,
       escalated_to_manager_at: complaint.escalated_to_manager_at,
       escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
       escalated_to_principal_at: complaint.escalated_to_principal_at,
+      escalation_history: complaint.escalation_history || [],
+      escalationHistory: complaint.escalation_history || [],
     }))
 
     return res.json({ complaints: response })
@@ -1039,97 +1159,25 @@ app.get('/api/complaints/viceprincipal', authenticateToken, requireRole('vicepri
   }
 })
 
-app.get('/api/principal/complaints', authenticateToken, requireRole('principal'), async (req, res) => {
+
+
+app.post('/api/complaints/escalate', authenticateToken, async (req, res) => {
   try {
-    await autoEscalateWardenComplaintsToManager()
-    await autoEscalateManagerComplaintsToVicePrincipal()
-    await autoEscalateVicePrincipalComplaintsToPrincipal()
-
-    const complaints = await Complaint.find({ current_level: 'Principal' })
-      .sort({ created_date: -1 })
-      .populate('student_id', 'name')
-      .lean()
-
-    const response = complaints.map((complaint) => ({
-      id: complaint._id.toString(),
-      title: complaint.complaint_title,
-      complaint_title: complaint.complaint_title,
-      issue: complaint.complaint_title,
-      description: complaint.description,
-      student: complaint.student_id?.name || 'Unknown',
-      student_name: complaint.student_id?.name || 'Unknown',
-      block: complaint.block,
-      floor: complaint.floor,
-      room: complaint.room,
-      room_no: complaint.room,
-      deadline: complaint.deadline_date,
-      deadline_date: complaint.deadline_date,
-      time_limit_days: complaint.time_limit_days,
-      submitted_date: complaint.created_date,
-      created_date: complaint.created_date,
-      updatedAt: complaint.updatedAt,
-      status: complaint.status,
-      solvedDate: complaint.solvedDate || complaint.solved_date,
-      solved_date: complaint.solved_date,
-      image: complaint.image_path,
-      image_path: complaint.image_path,
-      current_level: complaint.current_level,
-      escalated_to_manager_at: complaint.escalated_to_manager_at,
-      escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
-      escalated_to_principal_at: complaint.escalated_to_principal_at,
-    }))
-
-    return res.json({ complaints: response })
+    const result = await runAutoEscalation()
+    return res.json({ message: 'Escalation executed.', result })
   } catch (error) {
-    console.error('Principal complaint fetch error:', error.message, error.stack)
-    return res.status(500).json({ message: 'Server error. Please try again.' })
+    console.error('Manual escalation error:', error.message)
+    return res.status(500).json({ message: 'Server error during escalation.' })
   }
 })
 
-app.get('/api/complaints/principal', authenticateToken, requireRole('principal'), async (req, res) => {
+app.post('/complaints/escalate', authenticateToken, async (req, res) => {
   try {
-    await autoEscalateWardenComplaintsToManager()
-    await autoEscalateManagerComplaintsToVicePrincipal()
-    await autoEscalateVicePrincipalComplaintsToPrincipal()
-
-    const complaints = await Complaint.find({ current_level: 'Principal' })
-      .sort({ created_date: -1 })
-      .populate('student_id', 'name')
-      .lean()
-
-    const response = complaints.map((complaint) => ({
-      id: complaint._id.toString(),
-      title: complaint.complaint_title,
-      complaint_title: complaint.complaint_title,
-      issue: complaint.complaint_title,
-      description: complaint.description,
-      student: complaint.student_id?.name || 'Unknown',
-      student_name: complaint.student_id?.name || 'Unknown',
-      block: complaint.block,
-      floor: complaint.floor,
-      room: complaint.room,
-      room_no: complaint.room,
-      deadline: complaint.deadline_date,
-      deadline_date: complaint.deadline_date,
-      time_limit_days: complaint.time_limit_days,
-      submitted_date: complaint.created_date,
-      created_date: complaint.created_date,
-      updatedAt: complaint.updatedAt,
-      status: complaint.status,
-      solvedDate: complaint.solvedDate || complaint.solved_date,
-      solved_date: complaint.solved_date,
-      image: complaint.image_path,
-      image_path: complaint.image_path,
-      current_level: complaint.current_level,
-      escalated_to_manager_at: complaint.escalated_to_manager_at,
-      escalated_to_viceprincipal_at: complaint.escalated_to_viceprincipal_at,
-      escalated_to_principal_at: complaint.escalated_to_principal_at,
-    }))
-
-    return res.json({ complaints: response })
+    const result = await runAutoEscalation()
+    return res.json({ message: 'Escalation executed.', result })
   } catch (error) {
-    console.error('Principal complaint fetch error:', error.message, error.stack)
-    return res.status(500).json({ message: 'Server error. Please try again.' })
+    console.error('Manual escalation error:', error.message)
+    return res.status(500).json({ message: 'Server error during escalation.' })
   }
 })
 
@@ -1160,50 +1208,24 @@ app.get('/api/dashboard/vice-principal', authenticateToken, requireRole('vicepri
   return res.json({ name: req.user.name, role: req.user.role })
 })
 
-app.get('/api/dashboard/principal', authenticateToken, requireRole('principal'), (req, res) => {
-  return res.json({ name: req.user.name, role: req.user.role })
-})
-
 mongoose
   .connect(MONGODB_URI)
   .then(async () => {
     console.log('MongoDB Connected')
 
     try {
-      const escalatedWardenCount = await autoEscalateWardenComplaintsToManager()
-      const escalatedManagerCount = await autoEscalateManagerComplaintsToVicePrincipal()
-      const escalatedVicePrincipalCount = await autoEscalateVicePrincipalComplaintsToPrincipal()
-      if (escalatedWardenCount > 0) {
-        console.log(`Auto escalation moved ${escalatedWardenCount} complaint(s) from Warden to Manager.`)
-      }
-      if (escalatedManagerCount > 0) {
-        console.log(`Auto escalation moved ${escalatedManagerCount} complaint(s) from Manager to Vice Principal.`)
-      }
-      if (escalatedVicePrincipalCount > 0) {
-        console.log(`Auto escalation moved ${escalatedVicePrincipalCount} complaint(s) from Vice Principal to Principal.`)
-      }
+      await runAutoEscalation()
     } catch (error) {
       console.error('Startup auto escalation failed:', error.message)
     }
 
     const escalationInterval = setInterval(async () => {
       try {
-        const escalatedWardenCount = await autoEscalateWardenComplaintsToManager()
-        const escalatedManagerCount = await autoEscalateManagerComplaintsToVicePrincipal()
-        const escalatedVicePrincipalCount = await autoEscalateVicePrincipalComplaintsToPrincipal()
-        if (escalatedWardenCount > 0) {
-          console.log(`Auto escalation moved ${escalatedWardenCount} complaint(s) from Warden to Manager.`)
-        }
-        if (escalatedManagerCount > 0) {
-          console.log(`Auto escalation moved ${escalatedManagerCount} complaint(s) from Manager to Vice Principal.`)
-        }
-        if (escalatedVicePrincipalCount > 0) {
-          console.log(`Auto escalation moved ${escalatedVicePrincipalCount} complaint(s) from Vice Principal to Principal.`)
-        }
+        await runAutoEscalation()
       } catch (error) {
         console.error('Scheduled auto escalation failed:', error.message)
       }
-    }, Math.max(60 * 1000, ESCALATION_CHECK_INTERVAL_MS))
+    }, Math.max(10 * 1000, ESCALATION_CHECK_INTERVAL_MS))
 
     if (typeof escalationInterval.unref === 'function') {
       escalationInterval.unref()

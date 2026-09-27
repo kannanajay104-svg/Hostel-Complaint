@@ -723,7 +723,7 @@ function WardenDashboard() {
         return false
       }
       const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-      return currentLevel === "manager" || currentLevel === "viceprincipal" || currentLevel === "principal"
+      return currentLevel === "manager" || currentLevel === "viceprincipal"
     })
     .sort((a, b) => {
       const dateA = new Date(a.updatedAt || a.created_date || 0).getTime()
@@ -1069,11 +1069,9 @@ function WardenDashboard() {
                 const complaintName = complaint.complaint_title || complaint.title || complaint.issue || "Untitled"
                 const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
                 const movedPortalLabel =
-                  currentLevel === "principal"
-                    ? "Principal"
-                    : currentLevel === "viceprincipal"
-                      ? "Vice Principal"
-                      : "Manager"
+                  currentLevel === "viceprincipal"
+                    ? "Vice Principal"
+                    : "Manager"
                 return (
                   <button
                     key={`moved-${complaint.id || complaint._id || `${complaintName}-${index}`}`}

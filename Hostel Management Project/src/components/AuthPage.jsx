@@ -8,14 +8,12 @@ const CREATE_ROLE_MAP = {
   warden: 'warden',
   manager: 'manager',
   viceprincipal: 'viceprincipal',
-  principal: 'principal',
 }
 const LOGIN_ROLE_MAP = {
   student: 'student',
   warden: 'warden',
   manager: 'manager',
   viceprincipal: 'viceprincipal',
-  principal: 'principal',
 }
 const STUDENT_DASHBOARD = '/student-dashboard'
 const ROLE_REDIRECTS = {
@@ -23,7 +21,6 @@ const ROLE_REDIRECTS = {
   warden: '/warden-dashboard',
   manager: '/manager-dashboard',
   viceprincipal: '/viceprincipal-dashboard',
-  principal: '/principal-dashboard',
 }
 
 function AuthPage() {
@@ -625,35 +622,6 @@ function AuthPage() {
                 </span>
                 Vice Principal
               </button>
-              <button
-                type="button"
-                className={`role-tab ${activeRole === 'principal' ? 'is-active' : ''}`}
-                onClick={() => setActiveRole('principal')}
-                role="tab"
-                aria-selected={activeRole === 'principal'}
-              >
-                <span className="tab-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" focusable="false" role="img">
-                    <path
-                      d="M12 3l8 4v5c0 5-4 8-8 9-4-1-8-4-8-9V7l8-4"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M9 12l2 2 4-4"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </span>
-                Principal
-              </button>
             </div>
 
             <form className="auth-form" onSubmit={handleLogin}>
@@ -1054,7 +1022,6 @@ function AuthPage() {
                   <option value="warden">warden</option>
                   <option value="manager">manager</option>
                   <option value="viceprincipal">viceprincipal</option>
-                  <option value="principal">principal</option>
                 </select>
               </div>
             </div>

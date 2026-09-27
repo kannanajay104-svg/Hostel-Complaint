@@ -21,6 +21,19 @@ const complaintSchema = new mongoose.Schema({
     trim: true,
     default: '',
   },
+  department: {
+    type: String,
+    trim: true,
+  },
+  complaintType: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  timeLimit: {
+    type: Number,
+    min: 1,
+  },
   complaint_title: {
     type: String,
     required: true,
@@ -83,8 +96,38 @@ const complaintSchema = new mongoose.Schema({
     type: Date,
     default: null,
   },
+  escalation_history: [
+    {
+      from: { type: String, trim: true },
+      to: { type: String, trim: true },
+      escalated_at: { type: Date, default: Date.now },
+      escalatedAt: { type: Date, default: Date.now },
+    },
+  ],
 }, {
   timestamps: { createdAt: false, updatedAt: true },
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true },
+})
+
+complaintSchema.virtual('assignedRole').get(function () {
+  return this.current_level
+})
+
+complaintSchema.virtual('currentRole').get(function () {
+  return this.current_level
+})
+
+complaintSchema.virtual('escalationLevel').get(function () {
+  return this.current_level
+})
+
+complaintSchema.virtual('deadlineDate').get(function () {
+  return this.deadline_date
+})
+
+complaintSchema.virtual('escalationHistory').get(function () {
+  return this.escalation_history
 })
 
 const Complaint = mongoose.model('Complaint', complaintSchema)

@@ -12,16 +12,49 @@ const quickActions = [
 const blockOptions = ["A Block", "B Block", "C Block", "D Block"]
 const floorOptions = ["Ground Floor", "1st Floor", "2nd Floor", "3rd Floor", "Other"]
 const baseRoomOptions = ["101", "102", "103", "104", "105", "Bathroom", "Toilet", "Other"]
-const timeLimitOptions = [
-  "1 Day",
-  "2 Days",
-  "3 Days",
-  "4 Days",
-  "5 Days",
-  "6 Days",
-  "7 Days",
-  "Other",
+const departmentOptions = [
+  "Plumbing",
+  "Electrition",
+  "Cleaning",
+  "Food",
+  "Others",
 ]
+
+const plumbingComplaintTypeOptions = [
+  "Water is not coming",
+  "Any repair complaint",
+]
+
+const electritionComplaintTypeOptions = [
+  "Current cut",
+  "Any repair complaint",
+]
+
+const getTimeLimitInfo = (department, complaintType) => {
+  if (!department) {
+    return { days: null, label: "Select Department First" }
+  }
+  if (department === "Plumbing") {
+    if (complaintType === "Water is not coming") return { days: 1, label: "1 Day" }
+    if (complaintType === "Any repair complaint") return { days: 4, label: "4 Days" }
+    return { days: null, label: "Select Complaint Type First" }
+  }
+  if (department === "Electrition") {
+    if (complaintType === "Current cut") return { days: 1, label: "1 Day" }
+    if (complaintType === "Any repair complaint") return { days: 2, label: "2 Days" }
+    return { days: null, label: "Select Complaint Type First" }
+  }
+  if (department === "Cleaning") {
+    return { days: 2, label: "2 Days" }
+  }
+  if (department === "Food") {
+    return { days: 1, label: "1 Day" }
+  }
+  if (department === "Others") {
+    return { days: 4, label: "4 Days" }
+  }
+  return { days: null, label: "Select Department First" }
+}
 
 const extendDayOptions = ["1 Day", "2 Days", "3 Days", "4 Days", "Other"]
 
@@ -48,10 +81,10 @@ const getDefaultFormData = (profile) => {
     floorOther: "",
     roomNumber: profile.roomNumber || "",
     roomOther: "",
+    department: "",
+    complaintType: "",
     complaintTitle: "",
     complaintDescription: "",
-    timeLimitOption: "4 Days",
-    timeLimitOther: "",
     imageFile: null,
   }
 }
@@ -92,6 +125,7 @@ function StudentDashboard() {
   const [formErrors, setFormErrors] = useState({})
   const [imagePreviewUrl, setImagePreviewUrl] = useState("")
   const [isImagePreviewOpen, setIsImagePreviewOpen] = useState(false)
+  const calculatedTimeLimit = getTimeLimitInfo(formData.department, formData.complaintType)
 
   useEffect(() => {
     const rawUser = localStorage.getItem("user") || localStorage.getItem("currentUser")
@@ -156,6 +190,17 @@ function StudentDashboard() {
       setFormData(getDefaultFormData(profile))
     }
   }, [profile, isComplaintOpen])
+
+  useEffect(() => {
+    if (isComplaintOpen) {
+      document.body.style.overflow = "hidden"
+    } else {
+      document.body.style.overflow = ""
+    }
+    return () => {
+      document.body.style.overflow = ""
+    }
+  }, [isComplaintOpen])
 
   useEffect(() => {
     return () => {
@@ -340,17 +385,23 @@ function StudentDashboard() {
   const handleFormChange = (field) => (event) => {
     const { value } = event.target
     setFormData((prev) => {
+      if (field === "department") {
+        return { ...prev, department: value, complaintType: "" }
+      }
       if (field === "floorNumber" && value !== "Other") {
         return { ...prev, floorNumber: value, floorOther: "" }
       }
       if (field === "roomNumber" && value !== "Other") {
         return { ...prev, roomNumber: value, roomOther: "" }
       }
-      if (field === "timeLimitOption" && value !== "Other") {
-        return { ...prev, timeLimitOption: value, timeLimitOther: "" }
-      }
       return { ...prev, [field]: value }
     })
+    if (formErrors[field]) {
+      setFormErrors((prev) => ({ ...prev, [field]: "" }))
+    }
+    if (field === "department") {
+      setFormErrors((prev) => ({ ...prev, department: "", complaintType: "" }))
+    }
   }
 
   const handleImageChange = (event) => {
@@ -399,6 +450,15 @@ function StudentDashboard() {
       errors.floorOther = "Please enter the floor number."
     }
 
+    if (!formData.department) {
+      errors.department = "Department is required."
+    } else if (
+      (formData.department === "Plumbing" || formData.department === "Electrition") &&
+      !formData.complaintType
+    ) {
+      errors.complaintType = `${formData.department} complaint type is required.`
+    }
+
     if (!formData.complaintTitle.trim()) {
       errors.complaintTitle = "Complaint title is required."
     }
@@ -415,15 +475,6 @@ function StudentDashboard() {
       errors.roomOther = "Please enter the room details."
     }
 
-    if (formData.timeLimitOption === "Other") {
-      const customLimit = Number(formData.timeLimitOther)
-      if (!formData.timeLimitOther.trim()) {
-        errors.timeLimitOther = "Please enter the time limit in days."
-      } else if (!Number.isFinite(customLimit) || customLimit < 1) {
-        errors.timeLimitOther = "Time limit must be at least 1 day."
-      }
-    }
-
     return errors
   }
 
@@ -436,18 +487,21 @@ function StudentDashboard() {
       return
     }
 
-    const selectedTimeLimitDays =
-      formData.timeLimitOption === "Other"
-        ? Number(formData.timeLimitOther)
-        : Number(formData.timeLimitOption.split(" ")[0])
+    const timeLimitInfo = getTimeLimitInfo(formData.department, formData.complaintType)
+    if (!timeLimitInfo.days) {
+      return
+    }
 
     const payload = {
       block: formData.blockName,
       floor: formData.floorNumber === "Other" ? formData.floorOther : formData.floorNumber,
       room: formData.roomNumber === "Other" ? formData.roomOther : formData.roomNumber,
+      department: formData.department,
+      ...(formData.complaintType ? { complaintType: formData.complaintType } : {}),
+      timeLimit: timeLimitInfo.days,
+      time_limit_days: timeLimitInfo.days,
       complaint_title: formData.complaintTitle.trim(),
       description: formData.complaintDescription.trim(),
-      time_limit_days: selectedTimeLimitDays,
     }
 
     const authToken = localStorage.getItem("authToken")
@@ -685,13 +739,6 @@ function StudentDashboard() {
       const vicePrincipalDays = calculateEscalationRemainingDays(complaint?.escalated_to_viceprincipal_at)
       if (vicePrincipalDays !== null) {
         return vicePrincipalDays
-      }
-    }
-
-    if (currentLevel === "principal") {
-      const principalDays = calculateEscalationRemainingDays(complaint?.escalated_to_principal_at)
-      if (principalDays !== null) {
-        return principalDays
       }
     }
 
@@ -1381,7 +1428,7 @@ function StudentDashboard() {
 
       {isComplaintOpen && (
         <div className="complaint-overlay" role="dialog" aria-modal="true">
-          <div className="complaint-card" onClick={(event) => event.stopPropagation()}>
+          <div className="complaint-card submission-modal" onClick={(event) => event.stopPropagation()}>
             <div className="complaint-header">
               <div>
                 <h2>Complaint Submission</h2>
@@ -1393,191 +1440,221 @@ function StudentDashboard() {
             </div>
 
             <form className="complaint-form" onSubmit={handleSubmitComplaint}>
-              <div className="form-grid">
-                <div className="form-field">
-                  <label htmlFor="blockName">Block Name</label>
-                  <select
-                    id="blockName"
-                    value={formData.blockName}
-                    onChange={handleFormChange("blockName")}
-                  >
-                    {blockOptions.map((block) => (
-                      <option key={block} value={block}>
-                        {block}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="complaint-form-body">
+                <div className="form-grid">
+                  <div className="form-field">
+                    <label htmlFor="blockName">Block Name</label>
+                    <select
+                      id="blockName"
+                      value={formData.blockName}
+                      onChange={handleFormChange("blockName")}
+                    >
+                      {blockOptions.map((block) => (
+                        <option key={block} value={block}>
+                          {block}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                <div className="form-field">
-                  <label htmlFor="floorNumber">
-                    Floor Number <span className="required-asterisk">*</span>
-                  </label>
-                  <select
-                    id="floorNumber"
-                    value={formData.floorNumber}
-                    onChange={handleFormChange("floorNumber")}
-                    required
-                  >
-                    <option value="">Select floor</option>
-                    {floorOptions.map((floor) => (
-                      <option key={floor} value={floor}>
-                        {floor}
-                      </option>
-                    ))}
-                  </select>
-                  {formErrors.floorNumber && <span className="error-text">{formErrors.floorNumber}</span>}
-                  {formData.floorNumber === "Other" && (
-                    <div className="inline-input">
-                      <input
-                        type="text"
-                        placeholder="Enter Floor Number"
-                        value={formData.floorOther}
-                        onChange={handleFormChange("floorOther")}
-                        required
-                      />
-                      {formErrors.floorOther && <span className="error-text">{formErrors.floorOther}</span>}
-                    </div>
-                  )}
-                </div>
+                  <div className="form-field">
+                    <label htmlFor="floorNumber">
+                      Floor Number <span className="required-asterisk">*</span>
+                    </label>
+                    <select
+                      id="floorNumber"
+                      value={formData.floorNumber}
+                      onChange={handleFormChange("floorNumber")}
+                      required
+                    >
+                      <option value="">Select floor</option>
+                      {floorOptions.map((floor) => (
+                        <option key={floor} value={floor}>
+                          {floor}
+                        </option>
+                      ))}
+                    </select>
+                    {formErrors.floorNumber && <span className="error-text">{formErrors.floorNumber}</span>}
+                    {formData.floorNumber === "Other" && (
+                      <div className="inline-input">
+                        <input
+                          type="text"
+                          placeholder="Enter Floor Number"
+                          value={formData.floorOther}
+                          onChange={handleFormChange("floorOther")}
+                          required
+                        />
+                        {formErrors.floorOther && <span className="error-text">{formErrors.floorOther}</span>}
+                      </div>
+                    )}
+                  </div>
 
-                <div className="form-field">
-                  <label htmlFor="roomNumber">Room Number</label>
-                  <select
-                    id="roomNumber"
-                    value={formData.roomNumber}
-                    onChange={handleFormChange("roomNumber")}
-                  >
-                    {!formData.roomNumber && <option value="">Select room</option>}
-                    {roomOptions.map((room) => (
-                      <option key={room} value={room}>
-                        {room}
-                      </option>
-                    ))}
-                  </select>
-                  {formData.roomNumber === "Other" && (
-                    <div className="inline-input">
-                      <input
-                        type="text"
-                        placeholder="Enter Which Room"
-                        value={formData.roomOther}
-                        onChange={handleFormChange("roomOther")}
-                        required
-                      />
-                      {formErrors.roomOther && <span className="error-text">{formErrors.roomOther}</span>}
-                    </div>
-                  )}
-                </div>
+                  <div className="form-field">
+                    <label htmlFor="roomNumber">Room Number</label>
+                    <select
+                      id="roomNumber"
+                      value={formData.roomNumber}
+                      onChange={handleFormChange("roomNumber")}
+                    >
+                      {!formData.roomNumber && <option value="">Select room</option>}
+                      {roomOptions.map((room) => (
+                        <option key={room} value={room}>
+                          {room}
+                        </option>
+                      ))}
+                    </select>
+                    {formData.roomNumber === "Other" && (
+                      <div className="inline-input">
+                        <input
+                          type="text"
+                          placeholder="Enter Which Room"
+                          value={formData.roomOther}
+                          onChange={handleFormChange("roomOther")}
+                          required
+                        />
+                        {formErrors.roomOther && <span className="error-text">{formErrors.roomOther}</span>}
+                      </div>
+                    )}
+                  </div>
 
-                <div className="form-field">
-                  <label htmlFor="timeLimitOption">
-                    Time Limit <span className="required-asterisk">*</span>
-                  </label>
-                  <select
-                    id="timeLimitOption"
-                    value={formData.timeLimitOption}
-                    onChange={handleFormChange("timeLimitOption")}
-                    required
-                  >
-                    {timeLimitOptions.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                  {formData.timeLimitOption === "Other" && (
-                    <div className="inline-input time-limit-input">
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        inputMode="numeric"
-                        placeholder="Enter Time Limit (in days)"
-                        value={formData.timeLimitOther}
-                        onChange={handleFormChange("timeLimitOther")}
+                  <div className="form-field">
+                    <label htmlFor="department">
+                      Department <span className="required-asterisk">*</span>
+                    </label>
+                    <select
+                      id="department"
+                      value={formData.department}
+                      onChange={handleFormChange("department")}
+                      required
+                    >
+                      <option value="">Select Department</option>
+                      {departmentOptions.map((dept) => (
+                        <option key={dept} value={dept}>
+                          {dept}
+                        </option>
+                      ))}
+                    </select>
+                    {formErrors.department && <span className="error-text">{formErrors.department}</span>}
+                  </div>
+
+                  {(formData.department === "Plumbing" || formData.department === "Electrition") && (
+                    <div className="form-field">
+                      <label htmlFor="complaintType">
+                        {formData.department === "Plumbing"
+                          ? "Plumbing Complaint Type"
+                          : "Electrition Complaint Type"}{" "}
+                        <span className="required-asterisk">*</span>
+                      </label>
+                      <select
+                        id="complaintType"
+                        value={formData.complaintType}
+                        onChange={handleFormChange("complaintType")}
                         required
-                      />
-                      {formErrors.timeLimitOther && (
-                        <span className="error-text">{formErrors.timeLimitOther}</span>
+                      >
+                        <option value="">Select complaint type</option>
+                        {(formData.department === "Plumbing"
+                          ? plumbingComplaintTypeOptions
+                          : electritionComplaintTypeOptions
+                        ).map((typeOption) => (
+                          <option key={typeOption} value={typeOption}>
+                            {typeOption}
+                          </option>
+                        ))}
+                      </select>
+                      {formErrors.complaintType && (
+                        <span className="error-text">{formErrors.complaintType}</span>
                       )}
                     </div>
                   )}
+
+                  <div className="form-field">
+                    <label htmlFor="timeLimit">Time Limit</label>
+                    <input
+                      id="timeLimit"
+                      type="text"
+                      value={calculatedTimeLimit.label}
+                      readOnly
+                      tabIndex={-1}
+                    />
+                  </div>
+
+                  <div className="form-field">
+                    <label htmlFor="complaintTitle">
+                      Complaint Title <span className="required-asterisk">*</span>
+                    </label>
+                    <input
+                      id="complaintTitle"
+                      type="text"
+                      placeholder="Enter complaint title"
+                      value={formData.complaintTitle}
+                      onChange={handleFormChange("complaintTitle")}
+                      required
+                    />
+                    {formErrors.complaintTitle && (
+                      <span className="error-text">{formErrors.complaintTitle}</span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="form-field">
-                  <label htmlFor="complaintTitle">
-                    Complaint Title <span className="required-asterisk">*</span>
+                  <label htmlFor="complaintDescription">
+                    Complaint Description <span className="required-asterisk">*</span>
                   </label>
-                  <input
-                    id="complaintTitle"
-                    type="text"
-                    placeholder="Enter complaint title"
-                    value={formData.complaintTitle}
-                    onChange={handleFormChange("complaintTitle")}
+                  <textarea
+                    id="complaintDescription"
+                    placeholder="Describe the issue in detail..."
+                    rows={4}
+                    value={formData.complaintDescription}
+                    onChange={handleFormChange("complaintDescription")}
                     required
                   />
-                  {formErrors.complaintTitle && (
-                    <span className="error-text">{formErrors.complaintTitle}</span>
+                  {formErrors.complaintDescription && (
+                    <span className="error-text">{formErrors.complaintDescription}</span>
                   )}
+                </div>
+
+                <div className="form-field">
+                  <label htmlFor="imageUpload">
+                    Upload Image <span className="required-asterisk">*</span>
+                  </label>
+                  <div className="upload-row">
+                    <label className="upload-button" htmlFor="imageUpload">
+                      Choose Photo
+                    </label>
+                    <input
+                      id="imageUpload"
+                      className="upload-input"
+                      type="file"
+                      accept=".jpg,.jpeg,.png"
+                      onChange={handleImageChange}
+                      required
+                    />
+                    {imagePreviewUrl && (
+                      <div className="upload-badge">
+                        <span className="upload-check" aria-hidden="true">
+                          ✓
+                        </span>
+                        Photo Uploaded
+                        <button
+                          type="button"
+                          className="preview-button"
+                          aria-label="Preview uploaded photo"
+                          onClick={handleOpenImagePreview}
+                        >
+                          🖼
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {formErrors.imageFile && <span className="error-text">{formErrors.imageFile}</span>}
                 </div>
               </div>
 
-              <div className="form-field">
-                <label htmlFor="complaintDescription">
-                  Complaint Description <span className="required-asterisk">*</span>
-                </label>
-                <textarea
-                  id="complaintDescription"
-                  placeholder="Describe the issue in detail..."
-                  rows={4}
-                  value={formData.complaintDescription}
-                  onChange={handleFormChange("complaintDescription")}
-                  required
-                />
-                {formErrors.complaintDescription && (
-                  <span className="error-text">{formErrors.complaintDescription}</span>
-                )}
+              <div className="complaint-form-footer">
+                <button type="submit" className="submit-button">
+                  Submit Complaint
+                </button>
               </div>
-
-              <div className="form-field">
-                <label htmlFor="imageUpload">
-                  Upload Image <span className="required-asterisk">*</span>
-                </label>
-                <div className="upload-row">
-                  <label className="upload-button" htmlFor="imageUpload">
-                    Choose Photo
-                  </label>
-                  <input
-                    id="imageUpload"
-                    className="upload-input"
-                    type="file"
-                    accept=".jpg,.jpeg,.png"
-                    onChange={handleImageChange}
-                    required
-                  />
-                  {imagePreviewUrl && (
-                    <div className="upload-badge">
-                      <span className="upload-check" aria-hidden="true">
-                        ✓
-                      </span>
-                      Photo Uploaded
-                      <button
-                        type="button"
-                        className="preview-button"
-                        aria-label="Preview uploaded photo"
-                        onClick={handleOpenImagePreview}
-                      >
-                        🖼
-                      </button>
-                    </div>
-                  )}
-                </div>
-                {formErrors.imageFile && <span className="error-text">{formErrors.imageFile}</span>}
-              </div>
-
-              <button type="submit" className="submit-button">
-                Submit Complaint
-              </button>
             </form>
           </div>
         </div>

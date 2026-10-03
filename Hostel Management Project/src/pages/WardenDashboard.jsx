@@ -204,18 +204,14 @@ function WardenDashboard() {
     (items) => {
       return items.reduce(
         (acc, complaint) => {
-          const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
           const status = normalizeStatus(complaint?.status)
-          if (status === "resolved") {
+          acc.total += 1
+          if (status === "pending") {
+            acc.pending += 1
+          } else if (status === "inProgress") {
+            acc.inProgress += 1
+          } else if (status === "resolved") {
             acc.resolved += 1
-            acc.total += 1
-          } else if (currentLevel === "warden") {
-            acc.total += 1
-            if (status === "pending") {
-              acc.pending += 1
-            } else if (status === "inProgress") {
-              acc.inProgress += 1
-            }
           }
           return acc
         },
@@ -309,6 +305,14 @@ function WardenDashboard() {
     const status = normalizeStatus(complaint?.status)
     if (status === "resolved") {
       return "Solved"
+    }
+
+    const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
+    if (currentLevel === "manager") {
+      return "In Manager"
+    }
+    if (currentLevel === "viceprincipal") {
+      return "In Vice Principal"
     }
 
     const remainingDays = getRemainingDays(complaint?.deadline_date)
@@ -697,15 +701,11 @@ function WardenDashboard() {
     }
   }
 
-  const wardenActiveComplaints = complaints.filter((complaint) => {
-    return String(complaint?.current_level || "").trim().toLowerCase() === "warden"
-  })
-
-  const pendingComplaints = wardenActiveComplaints.filter((complaint) => {
+  const pendingComplaints = complaints.filter((complaint) => {
     return normalizeStatus(complaint?.status) === "pending"
   })
 
-  const inProgressComplaints = wardenActiveComplaints.filter((complaint) => {
+  const inProgressComplaints = complaints.filter((complaint) => {
     return normalizeStatus(complaint?.status) === "inProgress"
   })
 
@@ -713,9 +713,13 @@ function WardenDashboard() {
     return normalizeStatus(complaint?.status) === "resolved"
   })
 
-  const urgentComplaints = wardenActiveComplaints
+  const urgentComplaints = complaints
     .filter((complaint) => {
       if (normalizeStatus(complaint?.status) === "resolved") {
+        return false
+      }
+      const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
+      if (currentLevel !== "warden") {
         return false
       }
       const remainingDays = getRemainingDays(complaint?.deadline_date)
@@ -746,7 +750,9 @@ function WardenDashboard() {
       return dateB - dateA
     })
 
-  const extendableComplaints = pendingComplaints
+  const extendableComplaints = pendingComplaints.filter((complaint) => {
+    return String(complaint?.current_level || "").trim().toLowerCase() === "warden"
+  })
 
   const selectedExtendComplaint =
     selectedExtendDetails ||
@@ -944,10 +950,7 @@ function WardenDashboard() {
       const dateB = new Date(getSolvedDateValue(b) || b.submitted_date || b.created_date || 0).getTime()
       return dateB - dateA
     })
-  const allComplaints = [
-    ...wardenActiveComplaints.filter((complaint) => normalizeStatus(complaint?.status) !== "resolved"),
-    ...resolvedComplaints,
-  ].sort((a, b) => {
+  const allComplaints = [...complaints].sort((a, b) => {
     const dateA = new Date(a.created_date || 0).getTime()
     const dateB = new Date(b.created_date || 0).getTime()
     return dateB - dateA
@@ -1097,7 +1100,7 @@ function WardenDashboard() {
                     className="welcome-urgent-item"
                     onClick={() => openUrgentComplaintModal(complaint)}
                   >
-                    {complaintName} - This complaint was went to {movedPortalLabel} portal.
+                    {complaintName} - This complaint is currently in {movedPortalLabel} portal.
                   </button>
                 )
               })}
@@ -1776,8 +1779,18 @@ function WardenDashboard() {
           <div className="complaint-card extend-modal status-modal" onClick={(event) => event.stopPropagation()}>
             <div className="complaint-header">
               <div>
-                <h2>Urgent Complaint Details</h2>
-                <p>Complaint is near deadline and needs immediate attention.</p>
+                <h2>
+                  {selectedUrgentComplaint.current_level &&
+                  String(selectedUrgentComplaint.current_level).trim().toLowerCase() !== "warden"
+                    ? "Escalated Complaint Details"
+                    : "Urgent Complaint Details"}
+                </h2>
+                <p>
+                  {selectedUrgentComplaint.current_level &&
+                  String(selectedUrgentComplaint.current_level).trim().toLowerCase() !== "warden"
+                    ? "Complaint has been escalated to next portal."
+                    : "Complaint is near deadline and needs immediate attention."}
+                </p>
               </div>
               <button type="button" className="close-button" onClick={closeUrgentComplaintModal}>
                 Close
@@ -1785,6 +1798,14 @@ function WardenDashboard() {
             </div>
 
             <div className="form-grid">
+              <div className="form-field">
+                <label>Current Escalation Level</label>
+                <input
+                  type="text"
+                  value={getPortalLabel(selectedUrgentComplaint.current_level || "Warden")}
+                  readOnly
+                />
+              </div>
               <div className="form-field">
                 <label>Complaint Name</label>
                 <input

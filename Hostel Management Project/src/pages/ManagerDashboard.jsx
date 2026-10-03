@@ -205,18 +205,14 @@ function ManagerDashboard() {
     (items) => {
       return items.reduce(
         (acc, complaint) => {
-          const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-          if (currentLevel !== "manager") {
-            return acc
-          }
           const status = normalizeStatus(complaint?.status)
           acc.total += 1
           if (status === "pending") {
             acc.pending += 1
-          } else if (status === "resolved") {
-            acc.resolved += 1
           } else if (status === "inProgress") {
             acc.inProgress += 1
+          } else if (status === "resolved") {
+            acc.resolved += 1
           }
           return acc
         },
@@ -347,6 +343,11 @@ function ManagerDashboard() {
       return "Solved"
     }
 
+    const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
+    if (currentLevel === "viceprincipal") {
+      return "In Vice Principal"
+    }
+
     const remainingDays = getRemainingDays(complaint)
     if (remainingDays === null) {
       return "--"
@@ -409,10 +410,7 @@ function ManagerDashboard() {
 
       const data = await response.json()
       const items = Array.isArray(data.complaints) ? data.complaints : []
-      const managerItems = items.filter(
-        (complaint) => String(complaint?.current_level || "").trim().toLowerCase() === "manager"
-      )
-      const nextStats = getStatusCounts(managerItems)
+      const nextStats = getStatusCounts(items)
       const nextSnapshot = JSON.stringify({ nextStats, items })
 
       if (nextSnapshot !== lastDataSnapshotRef.current) {
@@ -464,7 +462,14 @@ function ManagerDashboard() {
         ...complaint,
         id: String(complaint?.id || complaint?._id || ""),
       }))
-      setStatusComplaints(normalizedItems.filter((complaint) => complaint.id))
+      setStatusComplaints(
+        normalizedItems.filter(
+          (complaint) =>
+            complaint.id &&
+            isStatusUpdatable(complaint) &&
+            String(complaint?.current_level || "").trim().toLowerCase() === "manager"
+        )
+      )
     } catch (error) {
       console.error(error?.response?.data || error?.message || error)
       setStatusComplaints([])
@@ -717,10 +722,7 @@ function ManagerDashboard() {
               ? { ...complaint, ...updatedComplaint, id: updatedComplaint.id }
               : complaint
           )
-          const managerItems = next.filter(
-            (complaint) => String(complaint?.current_level || "").trim().toLowerCase() === "manager"
-          )
-          setStats(getStatusCounts(managerItems))
+          setStats(getStatusCounts(next))
           return next
         })
         setStatusComplaints((prev) =>
@@ -749,10 +751,7 @@ function ManagerDashboard() {
     }
   }
 
-  const assignedComplaints = complaints.filter((complaint) => {
-    const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-    return currentLevel === "manager"
-  })
+  const assignedComplaints = complaints
 
   const pendingComplaints = assignedComplaints.filter((complaint) => {
     return normalizeStatus(complaint?.status) === "pending"
@@ -769,6 +768,10 @@ function ManagerDashboard() {
   const urgentComplaints = assignedComplaints
     .filter((complaint) => {
       if (normalizeStatus(complaint?.status) === "resolved") {
+        return false
+      }
+      const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
+      if (currentLevel !== "manager") {
         return false
       }
       const remainingDays = getRemainingDays(complaint)
@@ -791,10 +794,7 @@ function ManagerDashboard() {
         return false
       }
       const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-      return (
-        currentLevel === "viceprincipal" &&
-        Boolean(complaint?.escalated_to_manager_at)
-      )
+      return currentLevel === "viceprincipal"
     })
     .sort((a, b) => {
       const dateA = new Date(a.updatedAt || a.created_date || 0).getTime()
@@ -802,7 +802,9 @@ function ManagerDashboard() {
       return dateB - dateA
     })
 
-  const extendableComplaints = pendingComplaints
+  const extendableComplaints = pendingComplaints.filter((complaint) => {
+    return String(complaint?.current_level || "").trim().toLowerCase() === "manager"
+  })
 
   const selectedExtendComplaint =
     selectedExtendDetails ||
@@ -1144,7 +1146,7 @@ function ManagerDashboard() {
                     className="welcome-urgent-item"
                     onClick={() => openUrgentComplaintModal(complaint)}
                   >
-                    {complaintName} - This complaint was went to {movedPortalLabel} portal.
+                    {complaintName} - This complaint is currently in {movedPortalLabel} portal.
                   </button>
                 )
               })}
@@ -1818,8 +1820,18 @@ function ManagerDashboard() {
           <div className="complaint-card extend-modal status-modal" onClick={(event) => event.stopPropagation()}>
             <div className="complaint-header">
               <div>
-                <h2>Urgent Complaint Details</h2>
-                <p>Complaint is near deadline and needs immediate attention.</p>
+                <h2>
+                  {selectedUrgentComplaint.current_level &&
+                  String(selectedUrgentComplaint.current_level).trim().toLowerCase() !== "manager"
+                    ? "Escalated Complaint Details"
+                    : "Urgent Complaint Details"}
+                </h2>
+                <p>
+                  {selectedUrgentComplaint.current_level &&
+                  String(selectedUrgentComplaint.current_level).trim().toLowerCase() !== "manager"
+                    ? "Complaint has been escalated to next portal."
+                    : "Complaint is near deadline and needs immediate attention."}
+                </p>
               </div>
               <button type="button" className="close-button" onClick={closeUrgentComplaintModal}>
                 Close
@@ -1827,6 +1839,14 @@ function ManagerDashboard() {
             </div>
 
             <div className="form-grid">
+              <div className="form-field">
+                <label>Current Escalation Level</label>
+                <input
+                  type="text"
+                  value={getPortalLabel(selectedUrgentComplaint.current_level || "Manager")}
+                  readOnly
+                />
+              </div>
               <div className="form-field">
                 <label>Complaint Name</label>
                 <input

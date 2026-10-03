@@ -205,18 +205,14 @@ function VicePrincipalDashboard() {
     (items) => {
       return items.reduce(
         (acc, complaint) => {
-          const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-          if (currentLevel !== "viceprincipal") {
-            return acc
-          }
           const status = normalizeStatus(complaint?.status)
           acc.total += 1
           if (status === "pending") {
             acc.pending += 1
-          } else if (status === "resolved") {
-            acc.resolved += 1
           } else if (status === "inProgress") {
             acc.inProgress += 1
+          } else if (status === "resolved") {
+            acc.resolved += 1
           }
           return acc
         },
@@ -431,10 +427,7 @@ function VicePrincipalDashboard() {
     }
     try {
       const items = await fetchVicePrincipalComplaintsFromApi(authToken)
-      const vicePrincipalItems = items.filter(
-        (complaint) => String(complaint?.current_level || "").trim().toLowerCase() === "viceprincipal"
-      )
-      const nextStats = getStatusCounts(vicePrincipalItems)
+      const nextStats = getStatusCounts(items)
       const nextSnapshot = JSON.stringify({ nextStats, items })
 
       if (nextSnapshot !== lastDataSnapshotRef.current) {
@@ -474,7 +467,11 @@ function VicePrincipalDashboard() {
         ...complaint,
         id: String(complaint?.id || complaint?._id || ""),
       }))
-      setStatusComplaints(normalizedItems.filter((complaint) => complaint.id))
+      setStatusComplaints(
+        normalizedItems.filter(
+          (complaint) => complaint.id && isStatusUpdatable(complaint)
+        )
+      )
     } catch (error) {
       console.error(error?.response?.data || error?.message || error)
       setStatusComplaints([])
@@ -727,10 +724,7 @@ function VicePrincipalDashboard() {
               ? { ...complaint, ...updatedComplaint, id: updatedComplaint.id }
               : complaint
           )
-          const vicePrincipalItems = next.filter(
-            (complaint) => String(complaint?.current_level || "").trim().toLowerCase() === "viceprincipal"
-          )
-          setStats(getStatusCounts(vicePrincipalItems))
+          setStats(getStatusCounts(next))
           return next
         })
         setStatusComplaints((prev) =>
@@ -759,10 +753,7 @@ function VicePrincipalDashboard() {
     }
   }
 
-  const assignedComplaints = complaints.filter((complaint) => {
-    const currentLevel = String(complaint?.current_level || "").trim().toLowerCase()
-    return currentLevel === "viceprincipal"
-  })
+  const assignedComplaints = complaints
 
   const pendingComplaints = assignedComplaints.filter((complaint) => {
     return normalizeStatus(complaint?.status) === "pending"
@@ -1805,6 +1796,14 @@ function VicePrincipalDashboard() {
             </div>
 
             <div className="form-grid">
+              <div className="form-field">
+                <label>Current Escalation Level</label>
+                <input
+                  type="text"
+                  value={getPortalLabel(selectedUrgentComplaint.current_level || "VicePrincipal")}
+                  readOnly
+                />
+              </div>
               <div className="form-field">
                 <label>Complaint Name</label>
                 <input

@@ -230,7 +230,58 @@ const normalizeLegacyComplaints = async () => {
       }
     }
   }
+
+  // 3. Ensure any VicePrincipal complaints have escalated_to_manager_at set for consistent history
+  await Complaint.updateMany(
+    {
+      current_level: { $regex: /^viceprincipal$/i },
+      escalated_to_manager_at: null,
+    },
+    [
+      {
+        $set: {
+          escalated_to_manager_at: {
+            $ifNull: ['$escalated_to_viceprincipal_at', '$created_date', now],
+          },
+        },
+      },
+    ]
+  )
 }
+
+const getManagerVisibleQuery = () => ({
+  $or: [
+    { current_level: { $regex: /^(manager|viceprincipal|principal)$/i } },
+    { escalated_to_manager_at: { $ne: null } },
+    { escalated_to_viceprincipal_at: { $ne: null } },
+    { escalated_to_principal_at: { $ne: null } },
+    {
+      escalation_history: {
+        $elemMatch: {
+          $or: [
+            { to: { $regex: /^(manager|vice\s*principal|viceprincipal|principal)$/i } },
+            { from: { $regex: /^(manager|vice\s*principal|viceprincipal|principal)$/i } },
+          ],
+        },
+      },
+    },
+  ],
+})
+
+const getVicePrincipalVisibleQuery = () => ({
+  $or: [
+    { current_level: { $regex: /^(viceprincipal|principal)$/i } },
+    { escalated_to_viceprincipal_at: { $ne: null } },
+    { escalated_to_principal_at: { $ne: null } },
+    {
+      escalation_history: {
+        $elemMatch: {
+          to: { $regex: /^(vice\s*principal|viceprincipal|principal)$/i },
+        },
+      },
+    },
+  ],
+})
 
 const runAutoEscalation = async ({ forceAll = false } = {}) => {
   try {
@@ -726,7 +777,12 @@ app.get('/complaints/warden', authenticateToken, requireRole('warden'), async (r
   try {
     await runAutoEscalation()
 
-    const complaints = await Complaint.find({ current_level: 'Warden' })
+    const warden = await User.findById(req.user.id).lean()
+    const query = {
+      ...(warden?.block ? { block: warden.block } : {}),
+    }
+
+    const complaints = await Complaint.find(query)
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -800,12 +856,29 @@ app.get('/api/complaints/:id', authenticateToken, async (req, res) => {
         return res.status(403).json({ message: 'You cannot access this complaint.' })
       }
     } else if (req.user.role === 'manager') {
-      const reachedManagerPortal = Boolean(complaint.escalated_to_manager_at) || currentLevel === 'manager'
+      const reachedManagerPortal =
+        Boolean(complaint.escalated_to_manager_at) ||
+        Boolean(complaint.escalated_to_viceprincipal_at) ||
+        Boolean(complaint.escalated_to_principal_at) ||
+        /^(manager|viceprincipal|principal)$/i.test(currentLevel) ||
+        (Array.isArray(complaint.escalation_history) &&
+          complaint.escalation_history.some(
+            (entry) =>
+              /^(manager|vice\s*principal|viceprincipal|principal)$/i.test(entry?.to || '') ||
+              /^(manager|vice\s*principal|viceprincipal|principal)$/i.test(entry?.from || '')
+          ))
       if (!reachedManagerPortal) {
         return res.status(403).json({ message: 'You cannot access this complaint.' })
       }
     } else if (req.user.role === 'viceprincipal') {
-      const reachedVicePrincipalPortal = Boolean(complaint.escalated_to_viceprincipal_at) || currentLevel === 'viceprincipal'
+      const reachedVicePrincipalPortal =
+        Boolean(complaint.escalated_to_viceprincipal_at) ||
+        Boolean(complaint.escalated_to_principal_at) ||
+        /^(viceprincipal|principal)$/i.test(currentLevel) ||
+        (Array.isArray(complaint.escalation_history) &&
+          complaint.escalation_history.some(
+            (entry) => /^(vice\s*principal|viceprincipal|principal)$/i.test(entry?.to || '')
+          ))
       if (!reachedVicePrincipalPortal) {
         return res.status(403).json({ message: 'You cannot access this complaint.' })
       }
@@ -861,7 +934,13 @@ app.get('/api/warden/complaints', authenticateToken, requireRole('warden'), asyn
   try {
     await runAutoEscalation()
 
-    const complaints = await Complaint.find({ current_level: 'Warden', status: 'Pending' })
+    const warden = await User.findById(req.user.id).lean()
+    const query = {
+      status: { $regex: /^pending$/i },
+      ...(warden?.block ? { block: warden.block } : {}),
+    }
+
+    const complaints = await Complaint.find(query)
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -1027,12 +1106,7 @@ app.get('/api/manager/complaints', authenticateToken, requireRole('manager'), as
   try {
     await runAutoEscalation()
 
-    const complaints = await Complaint.find({
-      $or: [
-        { current_level: { $regex: /^manager$/i } },
-        { current_level: { $regex: /^viceprincipal$/i }, escalated_to_manager_at: { $ne: null } },
-      ],
-    })
+    const complaints = await Complaint.find(getManagerVisibleQuery())
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -1083,12 +1157,7 @@ app.get('/api/complaints/manager', authenticateToken, requireRole('manager'), as
   try {
     await runAutoEscalation()
 
-    const complaints = await Complaint.find({
-      $or: [
-        { current_level: { $regex: /^manager$/i } },
-        { current_level: { $regex: /^viceprincipal$/i }, escalated_to_manager_at: { $ne: null } },
-      ],
-    })
+    const complaints = await Complaint.find(getManagerVisibleQuery())
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -1139,7 +1208,7 @@ app.get('/api/viceprincipal/complaints', authenticateToken, requireRole('vicepri
   try {
     await runAutoEscalation()
 
-    const complaints = await Complaint.find({ current_level: { $regex: /^viceprincipal$/i } })
+    const complaints = await Complaint.find(getVicePrincipalVisibleQuery())
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -1190,7 +1259,7 @@ app.get('/api/complaints/viceprincipal', authenticateToken, requireRole('vicepri
   try {
     await runAutoEscalation()
 
-    const complaints = await Complaint.find({ current_level: { $regex: /^viceprincipal$/i } })
+    const complaints = await Complaint.find(getVicePrincipalVisibleQuery())
       .sort({ created_date: -1 })
       .populate('student_id', 'name')
       .lean()
@@ -1261,31 +1330,92 @@ app.post('/complaints/escalate', authenticateToken, async (req, res) => {
   }
 })
 
-app.get('/api/dashboard/student', authenticateToken, requireRole('student'), (req, res) => {
-  return res.json({
-    name: req.user.name,
-    role: req.user.role,
-    room: 'Room 101',
-    block: 'Block A',
-    stats: {
-      total: 0,
-      pending: 0,
-      inProgress: 0,
-      resolved: 0,
-    },
-  })
+app.get('/api/dashboard/student', authenticateToken, requireRole('student'), async (req, res) => {
+  try {
+    const complaints = await Complaint.find({ student_id: req.user.id }).lean()
+    const stats = complaints.reduce(
+      (acc, c) => {
+        acc.total += 1
+        const s = normalizeStatus(c.status)
+        if (s === 'pending') acc.pending += 1
+        else if (s === 'in progress' || s === 'in_progress' || s === 'inprogress') acc.inProgress += 1
+        else if (isResolvedStatus(s)) acc.resolved += 1
+        return acc
+      },
+      { total: 0, pending: 0, inProgress: 0, resolved: 0 }
+    )
+    return res.json({
+      name: req.user.name,
+      role: req.user.role,
+      room: 'Room 101',
+      block: 'Block A',
+      stats,
+    })
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' })
+  }
 })
 
-app.get('/api/dashboard/warden', authenticateToken, requireRole('warden'), (req, res) => {
-  return res.json({ name: req.user.name, role: req.user.role })
+app.get('/api/dashboard/warden', authenticateToken, requireRole('warden'), async (req, res) => {
+  try {
+    const warden = await User.findById(req.user.id).lean()
+    const query = { ...(warden?.block ? { block: warden.block } : {}) }
+    const complaints = await Complaint.find(query).lean()
+    const stats = complaints.reduce(
+      (acc, c) => {
+        acc.total += 1
+        const s = normalizeStatus(c.status)
+        if (s === 'pending') acc.pending += 1
+        else if (s === 'in progress' || s === 'in_progress' || s === 'inprogress') acc.inProgress += 1
+        else if (isResolvedStatus(s)) acc.resolved += 1
+        return acc
+      },
+      { total: 0, pending: 0, inProgress: 0, resolved: 0 }
+    )
+    return res.json({ name: req.user.name, role: req.user.role, stats })
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' })
+  }
 })
 
-app.get('/api/dashboard/manager', authenticateToken, requireRole('manager'), (req, res) => {
-  return res.json({ name: req.user.name, role: req.user.role })
+app.get('/api/dashboard/manager', authenticateToken, requireRole('manager'), async (req, res) => {
+  try {
+    const complaints = await Complaint.find(getManagerVisibleQuery()).lean()
+    const stats = complaints.reduce(
+      (acc, c) => {
+        acc.total += 1
+        const s = normalizeStatus(c.status)
+        if (s === 'pending') acc.pending += 1
+        else if (s === 'in progress' || s === 'in_progress' || s === 'inprogress') acc.inProgress += 1
+        else if (isResolvedStatus(s)) acc.resolved += 1
+        return acc
+      },
+      { total: 0, pending: 0, inProgress: 0, resolved: 0 }
+    )
+    return res.json({ name: req.user.name, role: req.user.role, stats })
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' })
+  }
 })
 
-app.get('/api/dashboard/vice-principal', authenticateToken, requireRole('viceprincipal'), (req, res) => {
-  return res.json({ name: req.user.name, role: req.user.role })
+app.get('/api/dashboard/vice-principal', authenticateToken, requireRole('viceprincipal'), async (req, res) => {
+  try {
+    const complaints = await Complaint.find(getVicePrincipalVisibleQuery()).lean()
+    const stats = complaints.reduce(
+      (acc, c) => {
+        acc.total += 1
+        const s = normalizeStatus(c.status)
+        if (s === 'pending') acc.pending += 1
+        else if (s === 'in progress' || s === 'in_progress' || s === 'inprogress') acc.inProgress += 1
+        else if (isResolvedStatus(s)) acc.resolved += 1
+        return acc
+      },
+      { total: 0, pending: 0, inProgress: 0, resolved: 0 }
+    )
+    return res.json({ name: req.user.name, role: req.user.role, stats })
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error' })
+  }
 })
 
 mongoose
